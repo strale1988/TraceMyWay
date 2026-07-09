@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <title>TraceMyWay — Drive · Cycle · Walk</title>
+<link rel="icon" href="data:,">
 
 <!-- Tailwind -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -1000,6 +1001,33 @@
   });
 
   // ---------------------------------------------------------------
+  // ---------------------------------------------------------------
+  // OVERPASS REQUEST GATE — shared by speed-limit lookups and POI category
+  // fetches. The public overpass-api.de instance is aggressively rate-limited
+  // (429s) once more than one caller hits it independently, so every request
+  // funnels through here: a minimum gap between calls, plus a cooldown that
+  // kicks in and silently skips further requests for a while after a 429.
+  // ---------------------------------------------------------------
+  let lastOverpassRequestAt = 0;
+  let overpassBackoffUntil = 0;
+  const OVERPASS_MIN_GAP_MS = 3000;
+  const OVERPASS_429_COOLDOWN_MS = 60000;
+
+  async function overpassFetch(query){
+    const now = Date.now();
+    if (now < overpassBackoffUntil) throw new Error('overpass-backoff');
+    const wait = Math.max(0, lastOverpassRequestAt + OVERPASS_MIN_GAP_MS - now);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastOverpassRequestAt = Date.now();
+    const res = await fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query));
+    if (res.status === 429){
+      overpassBackoffUntil = Date.now() + OVERPASS_429_COOLDOWN_MS;
+      throw new Error('overpass-429');
+    }
+    if (!res.ok) throw new Error('overpass-error');
+    return res.json();
+  }
+
   // SPEED LIMIT — nearest tagged road, throttled by time + distance moved
   // ---------------------------------------------------------------
   let speedLimitValue = null;
@@ -1010,7 +1038,7 @@
   function maybeFetchSpeedLimit(lat, lon){
     const now = Date.now();
     const moved = lastSpeedLimitFetchLatLng ? distMeters({ lat, lon }, lastSpeedLimitFetchLatLng) : Infinity;
-    if (now - lastSpeedLimitFetchAt < 15000 && moved < 120) return;
+    if (now - lastSpeedLimitFetchAt < 25000 && moved < 150) return;
     lastSpeedLimitFetchAt = now;
     lastSpeedLimitFetchLatLng = { lat, lon };
     fetchSpeedLimit(lat, lon);
@@ -1019,9 +1047,7 @@
   async function fetchSpeedLimit(lat, lon){
     try {
       const q = `[out:json][timeout:8];way(around:35,${lat},${lon})["maxspeed"];out tags 3;`;
-      const res = await fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(q));
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await overpassFetch(q);
       const way = (data.elements || []).find(el => el.tags && el.tags.maxspeed);
       if (!way){ hideSpeedLimitSign(); return; }
       const raw = String(way.tags.maxspeed);
@@ -1031,7 +1057,7 @@
       else if (numMatch){ speedLimitValue = numMatch[1]; speedLimitUnit = 'km/h'; }
       else { hideSpeedLimitSign(); return; }
       showSpeedLimitSign();
-    } catch (_) { /* silent — Overpass demo server is rate-limited; keep last known value on screen */ }
+    } catch (_) { /* silent — rate-limited or briefly unavailable; keep last known value on screen */ }
   }
   function showSpeedLimitSign(){
     document.getElementById('speedLimitValue').textContent = speedLimitValue;
@@ -1369,26 +1395,31 @@
     poiMarkersByCategory[cat] = markers;
   }
 
+  let lastPoiErrorToastAt = 0;
   async function fetchPoiCategory(cat){
     const bounds = map.getBounds();
     const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
     const def = POI_CATEGORIES[cat];
     const q = `[out:json][timeout:15];(node${def.query}(${bbox});way${def.query}(${bbox}););out center 40;`;
     try {
-      const res = await fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(q));
-      if (!res.ok) throw new Error('Overpass error');
-      const data = await res.json();
+      const data = await overpassFetch(q);
       if (!activeCategories.has(cat)) return; // toggled off while the request was in flight
       renderPoiMarkers(cat, data.elements || []);
     } catch (_) {
-      showToast(`Couldn't load ${def.label} places right now.`);
+      // Rate-limited (or briefly down) — skip quietly rather than spamming a toast
+      // on every pan while the shared backoff window is active.
+      const now = Date.now();
+      if (now - lastPoiErrorToastAt > 20000){
+        lastPoiErrorToastAt = now;
+        showToast(`${def.label} places are temporarily unavailable — try again shortly.`);
+      }
     }
   }
 
   let poiMoveDebounce = null;
   map.on('moveend', () => {
     clearTimeout(poiMoveDebounce);
-    poiMoveDebounce = setTimeout(() => { activeCategories.forEach(cat => fetchPoiCategory(cat)); }, 600);
+    poiMoveDebounce = setTimeout(() => { activeCategories.forEach(cat => fetchPoiCategory(cat)); }, 1500);
   });
 
   // ---------------------------------------------------------------
