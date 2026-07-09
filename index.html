@@ -35,11 +35,11 @@
   });
 </script>
 
-<!-- Tailwind -->
-<script src="https://cdn.tailwindcss.com" onerror="window.__tmwFatal('Failed to load Tailwind CSS from cdn.tailwindcss.com. Check your internet connection (or any ad-blocker/VPN/firewall that might be blocking this CDN) and reload.')"></script>
-<!-- Leaflet -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" onerror="window.__tmwFatal('Failed to load the map library (Leaflet) from unpkg.com. Check your internet connection (or any ad-blocker/VPN/firewall that might be blocking this CDN) and reload.')"></script>
+<!-- Tailwind: pre-built production CSS, self-hosted (no runtime CDN/JIT compiler). -->
+<link rel="stylesheet" href="./tailwind.css" />
+<!-- Leaflet: self-hosted, same reasoning. -->
+<link rel="stylesheet" href="./vendor/leaflet/leaflet.css" />
+<script src="./vendor/leaflet/leaflet.js" onerror="window.__tmwFatal('Failed to load the map library (Leaflet) from ./vendor/leaflet/leaflet.js. Make sure the vendor/ folder was uploaded alongside index.html.')"></script>
 
 <!-- Fonts: Rajdhani (sporty/condensed display) + Inter (body/UI) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -698,6 +698,26 @@
   if (typeof L === 'undefined') {
     throw new Error('Map library (Leaflet) did not load — check your internet connection and reload.');
   }
+
+  // Sanity-check that tailwind.css actually applied. This catches the case
+  // that onerror can't: some ad blockers / carrier filters / privacy browsers
+  // return an empty 200 response for a blocked stylesheet instead of a
+  // network error, so the <link> "succeeds" with zero rules inside it. That
+  // used to leave the whole app silently unstyled and unusable (every
+  // fixed/positioned panel collapses into normal document flow, buttons
+  // overlap or sit off-screen) with no error shown anywhere. A probe element
+  // using a real utility class from tailwind.css tells us definitively
+  // whether the stylesheet's rules are actually in effect.
+  (function checkTailwindApplied(){
+    var probe = document.createElement('div');
+    probe.className = 'hidden';
+    document.body.appendChild(probe);
+    var applied = window.getComputedStyle(probe).display === 'none';
+    document.body.removeChild(probe);
+    if (!applied){
+      throw new Error('Styles failed to load (tailwind.css returned no rules). Check your internet connection, disable any ad-blocker/content-filter for this site, and reload.');
+    }
+  })();
 
   // Default map view — a pulled-back overview centered on Europe, shown until
   // the person's own GPS fix comes in (or they pan/search elsewhere). This
