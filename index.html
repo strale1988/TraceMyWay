@@ -1323,6 +1323,13 @@
   // more than one option for the current mode/points.
   const ROUTE_ALTERNATIVES = true;
   let availableRoutes = [];   // all routes returned for the current request
+  // The public routing.openstreetmap.de demo instance doesn't have the
+  // exclude-class lookup tables compiled in, so *any* exclude= value 400s —
+  // not just unsupported classes. Once a request proves that (the retry
+  // below succeeds with no excludes), stop sending exclude on every
+  // subsequent request instead of re-discovering the same 400 each time.
+  let excludeSupported = true;
+  let excludeDegradedToastShown = false;
   let selectedRouteIndex = 0;
   let alertedStepIndexForTurn = null;
 
@@ -1707,9 +1714,11 @@
       const points = [origin, ...waypoints, destination];
 
       const excludes = [];
-      if (routeAvoid.highway) excludes.push('motorway');
-      if (routeAvoid.ferry) excludes.push('ferry');
-      if (routeAvoid.unpaved) excludes.push('unpaved');
+      if (excludeSupported){
+        if (routeAvoid.highway) excludes.push('motorway');
+        if (routeAvoid.ferry) excludes.push('ferry');
+        if (routeAvoid.unpaved) excludes.push('unpaved');
+      }
 
       let routes;
       let degraded = false;
@@ -1721,6 +1730,7 @@
         // excludes rather than failing the whole request outright.
         if (excludes.length) {
           degraded = true;
+          excludeSupported = false; // this server rejected exclude — don't ask again this session
           routes = await fetchRoute(points, selectedMode, { excludes: [], alternatives: ROUTE_ALTERNATIVES });
         } else {
           throw err;
@@ -1745,7 +1755,10 @@
       navState = 'previewing';
       renderTripList();
       renderAltRoutes();
-      if (degraded) showToast("One of your route preferences isn't supported for this travel mode here — showing the closest match.");
+      if (degraded && !excludeDegradedToastShown) {
+        excludeDegradedToastShown = true;
+        showToast("Route preferences like avoid-highways aren't supported by this routing server — showing the standard route.");
+      }
 
       // Fetch one more labeled variant in the background (e.g. "without
       // highways" for a driving trip that didn't already exclude them) so
@@ -1774,11 +1787,13 @@
   // already excluding motorways. Fails silently; this is a nice-to-have.
   async function fetchSupplementaryRoutes(points, mode, baseExcludes){
     const extras = [];
-    if (mode === 'driving' && !baseExcludes.includes('motorway')){
+    if (excludeSupported && mode === 'driving' && !baseExcludes.includes('motorway')){
       try {
         const r = await fetchRoute(points, mode, { excludes: baseExcludes.concat('motorway') });
         if (r && r[0]) extras.push(Object.assign({}, r[0], { _label: 'Without highways' }));
-      } catch (_) { /* not available for this trip — skip quietly */ }
+      } catch (_) {
+        excludeSupported = false; // confirmed unsupported — stop trying for the rest of the session
+      }
     }
     return extras;
   }
