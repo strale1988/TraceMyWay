@@ -1064,6 +1064,10 @@
   let lastAcceptedFix = null; // {lat, lon, t}
 
   function startLocationWatch(){
+    if (window.isSecureContext === false){
+      showToast('Location needs a secure connection — open this app over HTTPS (or localhost), not a plain http:// or file:// address.', true);
+      return;
+    }
     if (!('geolocation' in navigator)){
       showToast('This device/browser has no GPS support.', true);
       return;
