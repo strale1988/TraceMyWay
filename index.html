@@ -911,8 +911,12 @@
   if (!document.fullscreenEnabled) fullscreenBtn.style.display = 'none';
 
   // ---------------------------------------------------------------
-  // COMPASS — prefers the device magnetometer (works while stationary);
-  // falls back to GPS course-over-ground when orientation isn't available.
+  // COMPASS — prefers GPS course-over-ground while moving (derived from
+  // real displacement, so it's immune to the magnetometer interference a
+  // dash/console-mounted phone suffers from inside a car — metal body,
+  // mount magnets, electronics all throw a compass off); falls back to the
+  // device magnetometer only when stationary or when GPS heading is stale
+  // (course-over-ground is meaningless without movement).
   // ---------------------------------------------------------------
   let deviceHeading = null;
   let lastDeviceHeadingAt = 0;
@@ -921,8 +925,10 @@
 
   function getCurrentHeading(){
     const now = Date.now();
-    if (deviceHeading !== null && (now - lastDeviceHeadingAt) < 3000) return deviceHeading;
-    return smoothedHeading;
+    const gpsFresh = smoothedHeading !== null && (now - lastGpsHeadingAt) < GPS_HEADING_FRESH_MS;
+    if (gpsFresh) return smoothedHeading; // moving — trust real course-over-ground over the compass
+    if (deviceHeading !== null && (now - lastDeviceHeadingAt) < 3000) return deviceHeading; // stationary/stale GPS — compass fallback
+    return smoothedHeading; // last-known GPS heading beats nothing at all
   }
 
   function handleOrientation(e){
@@ -936,7 +942,10 @@
     deviceHeading = heading;
     lastDeviceHeadingAt = now;
     updateCompassWidget();
-    if (followMode && headingUpMode) applyMapBearing(getCurrentHeading());
+    if (followMode && headingUpMode){
+      const heading = getCurrentHeading();
+      if (heading !== null) applyMapBearing(heading);
+    }
   }
 
   function attachOrientationListener(){
@@ -1093,8 +1102,9 @@
 
     if (followMode){
       map.panTo(displayLatLng, { animate: true, duration: 0.3 });
-      if (headingUpMode && smoothedHeading !== null && (now - lastGpsHeadingAt) < GPS_HEADING_FRESH_MS && deviceHeading === null){
-        applyMapBearing(smoothedHeading);
+      if (headingUpMode){
+        const heading = getCurrentHeading();
+        if (heading !== null) applyMapBearing(heading);
       }
     }
     if (!followMode || !headingUpMode){
