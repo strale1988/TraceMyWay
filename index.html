@@ -271,16 +271,22 @@
   #speedPill .speed-value{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:22px; line-height:1; color: var(--fog); }
   #speedPill .speed-unit{ font-size:10px; color: var(--steel); text-transform:uppercase; }
 
-  #speedLimitSign{ display:none; flex-direction:column; align-items:center; gap:3px; }
-  #speedLimitSign.visible{ display:flex; }
-  #speedLimitSign .sign-circle{
-    width:50px;height:50px;border-radius:50%;
-    background:#fdfdfd;border:5px solid #E4292F;
-    display:flex;align-items:center;justify-content:center;
-    box-shadow:0 6px 18px rgba(0,0,0,0.45);
+  /* Speed-limit pill — same shape/sizing as #speedPill for visual consistency,
+     just marked out with a red border so it reads as the limit rather than
+     the current speed. Sits above the speed pill in the stack. */
+  #speedLimitSign{
+    background: var(--panel-hi);
+    border: 2px solid #E4292F;
+    border-radius: 12px;
+    padding: 6px 12px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+    display: none;
+    align-items: baseline;
+    gap: 4px;
   }
-  #speedLimitSign .sign-circle span{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:19px; color:#101010; }
-  #speedLimitSign .sign-unit{ font-size:9px; color: var(--steel); text-transform:uppercase; letter-spacing:0.04em; }
+  #speedLimitSign.visible{ display: flex; }
+  #speedLimitSign .speed-value{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:22px; line-height:1; color: var(--fog); }
+  #speedLimitSign .speed-unit{ font-size:10px; color: var(--steel); text-transform:uppercase; }
 
   #searchCard{
     position: fixed;
@@ -366,18 +372,23 @@
      pill styling as the POI chip row for visual consistency. */
   #routeOptionsRow{ margin-top:6px; }
 
-  #altRoutesList{ display:none; flex-direction:column; gap:6px; margin-top:10px; }
+  /* Alt-route picker — a horizontally-scrolling chip row (like the POI/route
+     option chips) rather than a tall stacked list, so choosing between route
+     options no longer eats most of the map's vertical space. */
+  #altRoutesList{ display:none; gap:8px; margin-top:10px; overflow-x:auto; padding-bottom:2px; }
+  #altRoutesList::-webkit-scrollbar{ display:none; }
   #altRoutesList.visible{ display:flex; }
   .alt-route-item{
-    display:flex; align-items:center; justify-content:space-between;
-    padding:10px 12px; border-radius:12px;
+    flex-shrink:0; min-width: 92px;
+    display:flex; flex-direction:column; align-items:flex-start; gap:1px;
+    padding:8px 12px; border-radius:14px;
     background: var(--panel-hi); border:1px solid var(--line); color: var(--steel);
     text-align:left;
   }
   .alt-route-item.active{ border-color: var(--hiviz); color: var(--fog); background: rgba(36,99,214,0.12); }
-  .alt-route-item .art-time{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:14.5px; color: var(--fog); }
+  .alt-route-item .art-time{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:14.5px; color: var(--fog); line-height:1.15; }
   .alt-route-item.active .art-time{ color: var(--hiviz); }
-  .alt-route-item .art-dist{ font-size:11.5px; color: inherit; }
+  .alt-route-item .art-dist{ font-size:11px; color: inherit; }
   .alt-route-item .art-label{ font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.75; }
 
   #tripList{ display:none; flex-direction:column; margin-top:10px; gap:2px; }
@@ -478,7 +489,8 @@
     body.nav-active .float-stack{ bottom: calc(100px + env(safe-area-inset-bottom, 0px)); }
     .float-stack-left{ left: 12px; gap: 6px; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
     body.nav-active .float-stack-left{ bottom: calc(100px + env(safe-area-inset-bottom, 0px)); }
-    #speedLimitSign .sign-circle{ width: 44px; height: 44px; }
+    #speedLimitSign{ padding: 5px 10px; }
+    #speedLimitSign .speed-value{ font-size: 19px; }
     #searchCard, #hudTurnPanel{ left: 10px; right: 10px; padding: 12px; }
     #hudMetricsBar{ left: 10px; right: 10px; }
   }
@@ -570,11 +582,8 @@
 
   <!-- Floating status pills — bottom-left, mirrors the control stack on the right -->
   <div class="float-stack-left" id="speedCluster">
+    <div id="speedLimitSign"><span class="speed-value" id="speedLimitValue">--</span><span class="speed-unit" id="speedLimitUnit">km/h</span></div>
     <div id="speedPill"><span class="speed-value" id="speedValue">0</span><span class="speed-unit">km/h</span></div>
-    <div id="speedLimitSign">
-      <div class="sign-circle"><span id="speedLimitValue">--</span></div>
-      <span class="sign-unit" id="speedLimitUnit">km/h</span>
-    </div>
   </div>
 
   <!-- Floating controls: settings + fullscreen + compass + follow -->
@@ -617,6 +626,7 @@
         <button class="mode-pill" data-theme-choice="dark">Dark</button>
         <button class="mode-pill" data-theme-choice="auto">Auto</button>
       </div>
+      <div style="font-size:11px; color:var(--steel); margin-top:8px; line-height:1.4;">Auto switches with real darkness outside — using your device's light sensor where available, or the local time of day otherwise — not just your OS setting.</div>
       <div class="settings-row-title" style="margin-top:18px;">Sound</div>
       <button id="soundToggleBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Sound: On</button>
 
@@ -636,14 +646,70 @@
   <div id="gpsToast" class="hidden"></div>
 
 <script>
+  // Default map view — a pulled-back overview centered on Europe, shown until
+  // the person's own GPS fix comes in (or they pan/search elsewhere). This
+  // app isn't tied to any one city, so the default is a continent-level view
+  // rather than a specific town.
+  const DEFAULT_CENTER = [50.0, 12.0]; // roughly central Europe
+  const DEFAULT_ZOOM = 4;              // continent-level overview
+
   // ---------------------------------------------------------------
-  // THEME SYSTEM — light / dark / auto, persisted, live system-follow
+  // THEME SYSTEM — light / dark / auto, persisted
+  // "Auto" tracks real-world darkness rather than just the OS's light/dark
+  // setting: it prefers a live ambient-light sensor when the device exposes
+  // one, and otherwise falls back to the device's local clock (day hours vs.
+  // night hours). Nothing here depends on GPS/location, so it works the same
+  // wherever in the world the person opens the app.
+  // The OS prefers-color-scheme media query is kept only as a last-resort
+  // fallback for the brief window before either of those has reported in.
   // ---------------------------------------------------------------
   let themeMode = localStorage.getItem('tmw_theme') || 'auto';
   const lightMedia = window.matchMedia('(prefers-color-scheme: light)');
+  let ambientIsDark = null; // null = unknown yet; true/false once sensor or clock-time reports in
+  let usingLightSensor = false; // true once a live AmbientLightSensor is successfully feeding ambientIsDark
+
+  // Local-clock day/night split — an approximation (not aware of season or
+  // latitude, unlike a real sunrise/sunset calc) but simple, dependency-free,
+  // and reasonable everywhere as a fallback when there's no light sensor.
+  const DAY_STARTS_HOUR = 6;   // 06:00 local time
+  const NIGHT_STARTS_HOUR = 20; // 20:00 local time
+  function isDarkByClockTime(){
+    const h = new Date().getHours();
+    return h < DAY_STARTS_HOUR || h >= NIGHT_STARTS_HOUR;
+  }
+
+  function refreshAmbientFromClock(){
+    if (usingLightSensor) return; // live sensor readings take priority
+    const wasDark = ambientIsDark;
+    ambientIsDark = isDarkByClockTime();
+    if (ambientIsDark !== wasDark && themeMode === 'auto') applyTheme('auto');
+  }
+  refreshAmbientFromClock();
+  setInterval(refreshAmbientFromClock, 60 * 1000); // re-check every minute for the day/night crossing
+
+  // Prefer a live ambient-light sensor when the browser/device supports it —
+  // more accurate than a clock guess (tunnels, indoor parking, overcast
+  // skies, sunglasses-dark car interiors, actual local sunrise/sunset, etc.
+  // all get accounted for automatically).
+  (function initLightSensor(){
+    if (!('AmbientLightSensor' in window)) return;
+    try {
+      const sensor = new AmbientLightSensor({ frequency: 0.2 });
+      sensor.addEventListener('reading', () => {
+        usingLightSensor = true;
+        const wasDark = ambientIsDark;
+        ambientIsDark = sensor.illuminance < 12; // lux threshold for "dark outside"
+        if (ambientIsDark !== wasDark && themeMode === 'auto') applyTheme('auto');
+      });
+      sensor.addEventListener('error', () => { usingLightSensor = false; });
+      sensor.start();
+    } catch (_) { /* permission denied / sensor unavailable — clock fallback already running */ }
+  })();
 
   function effectiveTheme(){
-    return themeMode === 'auto' ? (lightMedia.matches ? 'light' : 'dark') : themeMode;
+    if (themeMode !== 'auto') return themeMode;
+    if (ambientIsDark !== null) return ambientIsDark ? 'dark' : 'light';
+    return lightMedia.matches ? 'light' : 'dark'; // brief fallback until sensor/clock-check reports in
   }
   function applyTheme(mode){
     themeMode = mode;
@@ -653,18 +719,16 @@
     setBasemap(eff);
     updateThemePillsUI();
   }
-  lightMedia.addEventListener('change', () => { if (themeMode === 'auto') applyTheme('auto'); });
+  lightMedia.addEventListener('change', () => { if (themeMode === 'auto' && ambientIsDark === null) applyTheme('auto'); });
 
   // ---------------------------------------------------------------
   // MAP + LEAFLET SETUP
   // ---------------------------------------------------------------
-  const NOVI_SAD = [45.2671, 19.8335]; // fallback center until the first GPS fix lands
-
   const map = L.map('map', {
     zoomControl: false,
     attributionControl: true,
-    center: NOVI_SAD,
-    zoom: 14,
+    center: DEFAULT_CENTER,
+    zoom: DEFAULT_ZOOM,
   });
 
   const TILE_URLS = {
@@ -1681,11 +1745,9 @@
     }
     altRoutesList.innerHTML = availableRoutes.map((r, i) => `
       <button class="alt-route-item${i === selectedRouteIndex ? ' active' : ''}" data-idx="${i}">
-        <span>
-          <div class="art-time">${formatDuration(r.duration || (r.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]))}</div>
-          <div class="art-label">${r._label || (i === 0 ? 'Fastest' : 'Alternative ' + i)}</div>
-        </span>
-        <span class="art-dist">${formatDistance(r.distance || 0)}</span>
+        <div class="art-time">${formatDuration(r.duration || (r.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]))}</div>
+        <div class="art-dist">${formatDistance(r.distance || 0)}</div>
+        <div class="art-label">${r._label || (i === 0 ? 'Fastest' : 'Alternative ' + i)}</div>
       </button>
     `).join('');
     altRoutesList.classList.add('visible');
