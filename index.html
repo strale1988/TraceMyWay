@@ -71,6 +71,18 @@
     background: rgba(255, 255, 255, 0.92);
     border: 1px solid rgba(20, 32, 46, 0.06);
   }
+  /* Search card sits directly over the map and the route spline runs
+     underneath it, so it gets a lighter, less-blurred glass than the rest
+     of the .glass surfaces (sheets, HUD panels) which don't have anything
+     worth seeing behind them. */
+  #searchCard.glass{
+    background: rgba(18, 27, 46, 0.62);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  html[data-theme="light"] #searchCard.glass{
+    background: rgba(255, 255, 255, 0.68);
+  }
 
   .input-field, .search-input-row{
     background: var(--panel-hi);
@@ -338,10 +350,13 @@
   .suggestion-item .s-title{ font-size: 13px; color: var(--fog); font-weight: 600; }
   .suggestion-item .s-sub{ font-size: 11px; color: var(--steel); margin-top: 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .s-add-stop{
-    flex-shrink:0; width:26px; height:26px; border-radius:50%;
-    background: var(--panel-hi); border:1px solid var(--line); color: var(--hiviz);
-    font-size:16px; line-height:1; display:flex; align-items:center; justify-content:center;
+    flex-shrink:0; width:36px; height:36px; border-radius:50%;
+    background: var(--hiviz); border:1px solid var(--hiviz); color: var(--asphalt);
+    font-size:22px; font-weight:700; line-height:1; display:flex; align-items:center; justify-content:center;
+    box-shadow: 0 3px 10px rgba(36,99,214,0.35);
+    transition: transform .1s ease;
   }
+  .s-add-stop:active{ transform: scale(0.88); }
 
   .mode-pills{
     display: flex; gap: 6px; margin-top: 10px;
@@ -923,6 +938,23 @@
   let compassPermissionRequested = false;
   let lastOrientationProcessAt = 0;
 
+  // The alpha value from deviceorientation/deviceorientationabsolute is
+  // measured against the device's SENSOR frame, not against whatever
+  // orientation the screen currently happens to be displaying in. Those two
+  // only match when the screen's "natural" orientation is portrait — plenty
+  // of Android phones (and most tablets) have a landscape natural frame, so
+  // even while the page is being viewed upright, the sensor is effectively
+  // rotated 90°/270° relative to what's on screen. Skipping this correction
+  // is exactly what produces a *fixed* 90°-off compass — the map looks
+  // rotated a quarter turn no matter which way the phone is actually facing.
+  // screen.orientation.angle (falling back to the older window.orientation)
+  // tells us that offset so we can cancel it out.
+  function getScreenAngle(){
+    if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+    if (typeof window.orientation === 'number') return window.orientation;
+    return 0;
+  }
+
   function getCurrentHeading(){
     const now = Date.now();
     const gpsFresh = smoothedHeading !== null && (now - lastGpsHeadingAt) < GPS_HEADING_FRESH_MS;
@@ -937,8 +969,9 @@
     lastOrientationProcessAt = now;
     let heading = null;
     if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) heading = e.webkitCompassHeading;
-    else if (typeof e.alpha === 'number' && !isNaN(e.alpha)) heading = (360 - e.alpha) % 360;
+    else if (typeof e.alpha === 'number' && !isNaN(e.alpha)) heading = (360 - e.alpha + getScreenAngle()) % 360;
     if (heading === null) return;
+    heading = ((heading % 360) + 360) % 360;
     deviceHeading = heading;
     lastDeviceHeadingAt = now;
     updateCompassWidget();
@@ -951,6 +984,9 @@
   function attachOrientationListener(){
     const evtName = 'ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation';
     window.addEventListener(evtName, handleOrientation);
+    const resync = () => { lastOrientationProcessAt = 0; }; // let the next sensor tick through the throttle immediately
+    if (screen.orientation) screen.orientation.addEventListener('change', resync);
+    else window.addEventListener('orientationchange', resync);
   }
 
   function initCompass(){
@@ -1467,12 +1503,16 @@
       item.querySelector('.s-sub').textContent = sub;
       item.addEventListener('click', () => {
         destInput.value = '';
+        destInput.blur();
         clearDestBtn.classList.remove('visible');
         suggestionsList.classList.remove('visible');
         setDestinationFromSelection(lat, lon, title);
       });
       item.querySelector('.s-add-stop').addEventListener('click', (ev) => {
         ev.stopPropagation();
+        destInput.value = '';
+        destInput.blur();
+        clearDestBtn.classList.remove('visible');
         suggestionsList.classList.remove('visible');
         addWaypointFromSelection(lat, lon, title);
       });
@@ -1484,9 +1524,13 @@
   // Tap-to-set destination directly on the map (only while browsing, not mid-nav)
   map.on('click', (e) => {
     if (navState === 'navigating') return;
+    destInput.value = '';
+    destInput.blur();
+    clearDestBtn.classList.remove('visible');
     suggestionsList.classList.remove('visible');
-    destInput.value = `Dropped pin (${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)})`;
-    setDestinationFromSelection(e.latlng.lat, e.latlng.lng, 'Dropped pin');
+    suggestionsList.innerHTML = '';
+    const label = `Dropped pin (${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)})`;
+    setDestinationFromSelection(e.latlng.lat, e.latlng.lng, label);
   });
 
   // ---------------------------------------------------------------
