@@ -1,0 +1,1264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>TraceMyRoute — Drive · Cycle · Walk</title>
+
+<!-- Tailwind -->
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Fonts: Rajdhani (sporty/condensed display) + Inter (body/UI) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --asphalt:      #0B1220;
+    --panel:        #121B2E;
+    --panel-hi:     #1B2740;
+    --hiviz:        #C6F135;
+    --hiviz-dim:    #9AC220;
+    --signal:       #FF6B35;
+    --fog:          #E9EDF3;
+    --steel:        #5B6B85;
+    --line:         #24314D;
+    --puck-blue:    #4285F4;
+  }
+  html, body { height: 100%; overscroll-behavior: none; }
+  body{
+    background: var(--asphalt);
+    color: var(--fog);
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .font-display{ font-family: 'Rajdhani', 'Inter', sans-serif; letter-spacing: 0.01em; }
+
+  #map{ position:absolute; inset:0; z-index:0; background:var(--asphalt); }
+
+  .hiviz-stripe{
+    background: repeating-linear-gradient(
+      -45deg,
+      var(--hiviz) 0px, var(--hiviz) 10px,
+      var(--asphalt) 10px, var(--asphalt) 20px
+    );
+  }
+
+  .glass{
+    background: rgba(18, 27, 46, 0.88);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(198, 241, 53, 0.08);
+  }
+
+  .input-field{
+    background: var(--panel-hi);
+    border: 1px solid var(--line);
+    color: var(--fog);
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .input-field:focus{
+    outline: none;
+    border-color: var(--hiviz);
+    box-shadow: 0 0 0 3px rgba(198,241,53,0.15);
+  }
+  .input-field::placeholder{ color: var(--steel); }
+
+  .btn-primary{
+    background: var(--hiviz);
+    color: var(--asphalt);
+    font-weight: 700;
+    transition: transform .1s ease, background .15s ease, box-shadow .15s ease;
+  }
+  .btn-primary:hover{ background: #d4ff4d; box-shadow: 0 0 24px rgba(198,241,53,0.35); }
+  .btn-primary:active{ transform: scale(0.97); }
+  .btn-primary:disabled{ opacity: 0.5; cursor: not-allowed; transform:none; box-shadow:none; }
+
+  .btn-secondary{
+    background: transparent;
+    border: 1.5px solid var(--line);
+    color: var(--steel);
+    font-weight: 600;
+    transition: border-color .15s ease, color .15s ease;
+  }
+  .btn-secondary:active{ border-color: var(--steel); color: var(--fog); }
+
+  .spinner{
+    border: 2px solid rgba(11,18,32,0.25);
+    border-top-color: var(--asphalt);
+    border-radius: 50%;
+    width: 16px; height: 16px;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin{ to{ transform: rotate(360deg); } }
+
+  .leaflet-control-attribution{
+    background: rgba(11,18,32,0.7) !important;
+    color: var(--steel) !important;
+    font-size: 10px !important;
+  }
+  .leaflet-control-attribution a{ color: var(--steel) !important; }
+  .leaflet-control-zoom{ display: none; }
+
+  .gps-dot-wrap{ position: relative; width: 22px; height: 22px; }
+  .gps-dot-halo{
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    background: rgba(66, 133, 244, 0.35);
+    animation: gpsPulse 2.2s ease-out infinite;
+  }
+  .gps-dot-core{
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 14px; height: 14px;
+    margin: -7px 0 0 -7px;
+    border-radius: 50%;
+    background: var(--puck-blue);
+    border: 2.5px solid #E9EDF3;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  }
+  @keyframes gpsPulse{
+    0%   { transform: scale(0.5); opacity: 0.9; }
+    70%  { transform: scale(2.4); opacity: 0; }
+    100% { transform: scale(2.4); opacity: 0; }
+  }
+
+  #gpsToast{
+    position: fixed;
+    left: 50%; bottom: 24px;
+    transform: translateX(-50%) translateY(0);
+    z-index: 900;
+    max-width: 88vw;
+    background: var(--panel-hi);
+    border-left: 3px solid var(--signal);
+    color: var(--fog);
+    font-size: 13px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    transition: opacity .3s ease, transform .3s ease;
+  }
+  #gpsToast.hidden{ opacity: 0; transform: translateX(-50%) translateY(8px); pointer-events: none; }
+
+  .leaflet-rotate-wrapper{
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    transition: transform .18s linear;
+    transform-origin: center center;
+  }
+
+  .gps-dot-arrow{
+    position: absolute; top: 50%; left: 50%;
+    width: 26px; height: 26px;
+    margin: -13px 0 0 -13px;
+    opacity: 0;
+    transition: opacity .2s ease;
+  }
+  .gps-dot-wrap.is-moving .gps-dot-arrow{ opacity: 1; }
+  .gps-dot-wrap.is-moving .gps-dot-core{ opacity: 0; }
+
+  .float-stack{
+    position: fixed;
+    right: 16px;
+    bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    z-index: 600;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .icon-btn{
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: var(--panel-hi);
+    border: 1px solid var(--line);
+    color: var(--steel);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+    transition: background .15s ease, color .15s ease, transform .1s ease;
+  }
+  .icon-btn:active{ transform: scale(0.93); }
+  .icon-btn.following{ color: var(--hiviz); border-color: rgba(198,241,53,0.4); }
+  .icon-btn.heading-up{ background: var(--hiviz); color: var(--asphalt); border-color: var(--hiviz); }
+
+  #speedPill{
+    position: fixed;
+    top: calc(64px + env(safe-area-inset-top, 0px));
+    left: 16px;
+    z-index: 600;
+    background: var(--panel-hi);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 6px 12px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+    display: none;
+    align-items: baseline;
+    gap: 4px;
+  }
+  #speedPill.visible{ display: flex; }
+  #speedPill .speed-value{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:22px; line-height:1; color: var(--fog); }
+  #speedPill .speed-unit{ font-size:10px; color: var(--steel); text-transform:uppercase; }
+
+  #searchCard{
+    position: fixed;
+    top: calc(16px + env(safe-area-inset-top, 0px));
+    left: 16px; right: 16px;
+    max-width: 460px;
+    margin: 0 auto;
+    z-index: 700;
+    border-radius: 18px;
+    padding: 14px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+    transition: opacity .2s ease, transform .2s ease;
+  }
+  #searchCard.hidden-card{ opacity: 0; transform: translateY(-12px); pointer-events: none; }
+
+  .search-input-row{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel-hi);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 0 10px;
+  }
+  .search-input-row:focus-within{ border-color: var(--hiviz); box-shadow: 0 0 0 3px rgba(198,241,53,0.15); }
+  #destInput{
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--fog);
+    font-size: 14px;
+    padding: 12px 4px;
+  }
+  #destInput::placeholder{ color: var(--steel); }
+  #clearDestBtn{ color: var(--steel); padding: 4px; display:none; }
+  #clearDestBtn.visible{ display: flex; }
+
+  #suggestionsList{
+    margin-top: 8px;
+    max-height: 240px;
+    overflow-y: auto;
+    display: none;
+  }
+  #suggestionsList.visible{ display: block; }
+  .suggestion-item{
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 6px;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+  }
+  .suggestion-item:last-child{ border-bottom: none; }
+  .suggestion-item:active{ background: var(--panel-hi); }
+  .suggestion-item .s-title{ font-size: 13px; color: var(--fog); font-weight: 600; }
+  .suggestion-item .s-sub{ font-size: 11px; color: var(--steel); margin-top: 1px; }
+
+  .mode-pills{
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+    background: var(--panel-hi);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 4px;
+  }
+  .mode-pill{
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 9px 4px;
+    border-radius: 9px;
+    font-family: 'Rajdhani', sans-serif;
+    font-weight: 600;
+    font-size: 12.5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--steel);
+    transition: background .15s ease, color .15s ease;
+  }
+  .mode-pill.active{ background: var(--hiviz); color: var(--asphalt); }
+  .mode-pill svg{ width: 16px; height: 16px; }
+
+  #routeSummary{
+    display: none;
+    margin-top: 10px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  #routeSummary.visible{ display: flex; }
+  #routeSummary .rs-stats{ display: flex; flex-direction: column; }
+  #routeSummary .rs-time{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size: 22px; color: var(--hiviz); line-height: 1; }
+  #routeSummary .rs-sub{ font-size: 11px; color: var(--steel); margin-top: 3px; }
+  #startNavBtn{
+    padding: 12px 20px;
+    border-radius: 12px;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 15px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
+  #routeError{
+    display: none;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--fog);
+    background: var(--panel-hi);
+    border-left: 3px solid var(--signal);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  #routeError.visible{ display: block; }
+
+  #hudTurnPanel{
+    position: fixed;
+    top: calc(16px + env(safe-area-inset-top, 0px));
+    left: 16px; right: 16px;
+    max-width: 460px;
+    margin: 0 auto;
+    z-index: 700;
+    border-radius: 18px;
+    padding: 14px 16px;
+    display: none;
+    align-items: center;
+    gap: 14px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  }
+  #hudTurnPanel.visible{ display: flex; }
+  .maneuver-icon-wrap{
+    flex-shrink: 0;
+    width: 52px; height: 52px;
+    border-radius: 14px;
+    background: var(--hiviz);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .maneuver-icon-wrap svg{ width: 30px; height: 30px; }
+  #hudTurnPanel .turn-copy{ flex: 1; min-width: 0; }
+  #turnDistance{ font-family:'Rajdhani',sans-serif; font-weight: 700; font-size: 20px; color: var(--fog); line-height: 1.1; }
+  #turnInstruction{ font-size: 13px; color: var(--steel); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #exitNavBtn{
+    flex-shrink: 0;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: var(--panel-hi);
+    border: 1px solid var(--line);
+    color: var(--steel);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #exitNavBtn:active{ color: var(--fog); }
+
+  #hudMetricsBar{
+    position: fixed;
+    left: 16px; right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    max-width: 460px;
+    margin: 0 auto;
+    z-index: 700;
+    border-radius: 18px;
+    padding: 14px 10px;
+    display: none;
+    align-items: stretch;
+    justify-content: space-around;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  }
+  #hudMetricsBar.visible{ display: flex; }
+  .metric-block{ display: flex; flex-direction: column; align-items: center; flex: 1; }
+  .metric-block .m-value{ font-family:'Rajdhani',sans-serif; font-weight: 700; font-size: 19px; color: var(--fog); line-height: 1.1; }
+  .metric-block.eta .m-value{ color: var(--hiviz); }
+  .metric-block .m-label{ font-size: 10px; color: var(--steel); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 3px; }
+  .metric-divider{ width: 1px; background: var(--line); margin: 2px 4px; }
+
+  #recalcBanner{
+    position: fixed;
+    top: calc(96px + env(safe-area-inset-top, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 750;
+    background: var(--panel-hi);
+    border: 1px solid rgba(198,241,53,0.4);
+    color: var(--hiviz);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 20px;
+    display: none;
+    align-items: center;
+    gap: 8px;
+  }
+  #recalcBanner.visible{ display: flex; }
+
+  .dest-pin{ filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5)); }
+
+  .fade-out{ opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body class="h-full w-full">
+
+  <!-- ============ MAP LAYER ============ -->
+  <div id="map" aria-hidden="true"></div>
+
+  <!-- Top status bar -->
+  <header class="fixed top-0 inset-x-0 z-[650] flex items-center justify-between px-4 py-3
+                  bg-gradient-to-b from-[var(--asphalt)]/90 to-transparent pointer-events-none">
+    <div class="flex items-center gap-2 pointer-events-auto">
+      <div class="w-8 h-8 rounded-md hiviz-stripe flex-shrink-0 shadow-lg"></div>
+      <span class="font-display font-700 text-lg tracking-wide">TRACE<span class="text-[var(--hiviz)]">MY</span>ROUTE</span>
+    </div>
+  </header>
+
+  <!-- Floating status pills -->
+  <div id="speedPill"><span class="speed-value" id="speedValue">0</span><span class="speed-unit">km/h</span></div>
+
+  <!-- ============ SEARCH CARD ============ -->
+  <div id="searchCard" class="glass">
+    <div class="search-input-row">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--steel)">
+        <circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input id="destInput" type="text" placeholder="Search a destination or tap the map…" autocomplete="off" />
+      <button id="clearDestBtn" title="Clear">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
+    </div>
+
+    <div id="suggestionsList"></div>
+
+    <div class="mode-pills" id="modePills">
+      <button class="mode-pill active" data-mode="driving" title="Driving">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/></svg>
+        <span>Drive</span>
+      </button>
+      <button class="mode-pill" data-mode="cycling" title="Cycling">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2 1 1 0 000 2zM12 17.5V14l-3-3 4-3 2 3h3"/></svg>
+        <span>Cycle</span>
+      </button>
+      <button class="mode-pill" data-mode="walking" title="Walking">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="1.6"/><path d="M10 22l1.5-6L9 14l1-5 3-2 3 2 2 2M11.5 16l3 1 2 5"/></svg>
+        <span>Walk</span>
+      </button>
+    </div>
+
+    <div id="routeError"></div>
+
+    <div id="routeSummary">
+      <div class="rs-stats">
+        <span class="rs-time" id="rsTime">—</span>
+        <span class="rs-sub" id="rsSub">—</span>
+      </div>
+      <button id="startNavBtn" class="btn-primary">Start Navigation</button>
+    </div>
+  </div>
+
+  <!-- ============ HUD: TURN-BY-TURN PANEL ============ -->
+  <div id="hudTurnPanel" class="glass">
+    <div class="maneuver-icon-wrap" id="maneuverIconWrap"></div>
+    <div class="turn-copy">
+      <div id="turnDistance">—</div>
+      <div id="turnInstruction">—</div>
+    </div>
+    <button id="exitNavBtn" title="Exit navigation">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+    </button>
+  </div>
+
+  <!-- Recalculating banner -->
+  <div id="recalcBanner"><span class="spinner" style="border-color: rgba(198,241,53,0.25); border-top-color: var(--hiviz);"></span><span>Recalculating route…</span></div>
+
+  <!-- ============ HUD: ETA / METRICS BAR ============ -->
+  <div id="hudMetricsBar" class="glass">
+    <div class="metric-block">
+      <span class="m-value" id="metricTime">—</span>
+      <span class="m-label">Remaining</span>
+    </div>
+    <div class="metric-divider"></div>
+    <div class="metric-block">
+      <span class="m-value" id="metricDistance">—</span>
+      <span class="m-label">Distance</span>
+    </div>
+    <div class="metric-divider"></div>
+    <div class="metric-block eta">
+      <span class="m-value" id="metricEta">—</span>
+      <span class="m-label">Arrival</span>
+    </div>
+  </div>
+
+  <!-- Floating controls: follow/compass -->
+  <div class="float-stack">
+    <button id="followBtn" class="icon-btn" title="Center on me / toggle heading-up">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
+      </svg>
+    </button>
+  </div>
+
+  <!-- ============ GPS / STATUS TOAST ============ -->
+  <div id="gpsToast" class="hidden"></div>
+
+<script>
+  // ---------------------------------------------------------------
+  // MAP + LEAFLET SETUP
+  // ---------------------------------------------------------------
+  const NOVI_SAD = [45.2671, 19.8335]; // fallback center until the first GPS fix lands
+
+  const map = L.map('map', {
+    zoomControl: false,
+    attributionControl: true,
+    center: NOVI_SAD,
+    zoom: 14,
+  });
+
+  // High-contrast dark basemap — no API key required, reads well outdoors/at night.
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    subdomains: 'abcd',
+    maxZoom: 20,
+  }).addTo(map);
+
+  // Reparents Leaflet's internal map-pane (tiles + markers + lines) inside a
+  // plain div we control, so *that* div can be CSS-rotated for heading-up
+  // navigation without touching the zoom/attribution controls or our floating
+  // buttons, which live outside the map-pane and stay fixed on screen.
+  let rotWrapper = null;
+  (function initRotationWrapper(){
+    const mapPane = map.getPane('mapPane');
+    if (!mapPane || !mapPane.parentElement) return;
+    rotWrapper = document.createElement('div');
+    rotWrapper.className = 'leaflet-rotate-wrapper';
+    mapPane.parentElement.insertBefore(rotWrapper, mapPane);
+    rotWrapper.appendChild(mapPane);
+  })();
+
+  const gpsToast = document.getElementById('gpsToast');
+  let toastTimer = null;
+  function showToast(msg, persist){
+    gpsToast.textContent = msg;
+    gpsToast.classList.remove('hidden');
+    clearTimeout(toastTimer);
+    if (!persist){
+      toastTimer = setTimeout(() => gpsToast.classList.add('hidden'), 4000);
+    }
+  }
+  function hideToast(){
+    clearTimeout(toastTimer);
+    gpsToast.classList.add('hidden');
+  }
+
+  // ---------------------------------------------------------------
+  // GPS PUCK — halo + dot (stationary) or rotating arrow (moving)
+  // ---------------------------------------------------------------
+  const blueDotIcon = L.divIcon({
+    className: '',
+    html: `<div class="gps-dot-wrap" id="puckWrap">
+             <div class="gps-dot-halo"></div>
+             <div class="gps-dot-core"></div>
+             <svg class="gps-dot-arrow" id="puckArrow" viewBox="0 0 24 24" fill="none">
+               <path d="M12 2 L19 20 L12 16 L5 20 Z" fill="#4285F4" stroke="#E9EDF3" stroke-width="1.2" stroke-linejoin="round"/>
+             </svg>
+           </div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+  });
+
+  let userMarker = null;
+  let accuracyCircle = null;
+  let watchId = null;
+
+  // --- Follow / heading-up state ------------------------------------------
+  // Three-state cycle on the follow button, same shape as a typical nav app:
+  //   off -> following (north-up) -> following (heading-up) -> off
+  let followMode = false;
+  let headingUpMode = false;
+  let mapBearing = 0; // continuous CSS bearing currently applied to rotWrapper
+
+  const followBtn = document.getElementById('followBtn');
+
+  function shortestAngleDelta(fromDeg, toDeg){
+    let d = (toDeg - fromDeg) % 360;
+    if (d > 180) d -= 360;
+    if (d < -180) d += 360;
+    return d;
+  }
+
+  function applyMapBearing(targetDeg){
+    const delta = shortestAngleDelta(mapBearing % 360, targetDeg);
+    mapBearing += delta;
+    if (rotWrapper) rotWrapper.style.transform = `rotate(${-mapBearing}deg)`;
+    // Counter-rotate the puck arrow so it keeps pointing the right way on
+    // screen: dead ahead ("up") while heading-up, or its true compass
+    // direction while the map stays north-up.
+    const arrow = document.getElementById('puckArrow');
+    if (arrow) arrow.style.transform = `rotate(${headingUpMode ? mapBearing : (smoothedHeading || 0)}deg)`;
+  }
+
+  function setFollowState(nextFollow, nextHeadingUp){
+    followMode = nextFollow;
+    headingUpMode = nextHeadingUp;
+
+    followBtn.classList.toggle('following', followMode);
+    followBtn.classList.toggle('heading-up', followMode && headingUpMode);
+
+    if (followMode){
+      map.dragging.disable();
+      if (lastGoodLatLng) map.setView(lastGoodLatLng, Math.max(map.getZoom(), 17));
+      if (!headingUpMode) applyMapBearing(0);
+    } else {
+      map.dragging.enable();
+      applyMapBearing(0);
+    }
+  }
+
+  followBtn.addEventListener('click', () => {
+    if (!followMode) setFollowState(true, false);
+    else if (followMode && !headingUpMode) setFollowState(true, true);
+    else setFollowState(false, false);
+  });
+
+  // ---------------------------------------------------------------
+  // GPS SMOOTHING — distance-adaptive position blend + EMA heading
+  // ---------------------------------------------------------------
+  let smoothedFixCoords = null;
+  let smoothedHeading = null;
+  let smoothedSpeedKmh = 0;
+  let lastGpsHeadingAt = 0;
+  let lastGoodLatLng = null;
+
+  const GPS_MAX_PLAUSIBLE_SPEED_MPS = 60; // ~215 km/h ceiling — faster jumps are treated as GPS glitches (raised from bike-only tuning to also cover driving)
+  const GPS_HEADING_MIN_SPEED_MPS = 0.6;  // below this, course-over-ground is just noise, not real heading
+  const GPS_HEADING_FRESH_MS = 4000;
+  const HEADING_SMOOTHING_FACTOR = 0.35;
+  const SPEED_SMOOTHING_FACTOR = 0.4;
+  const POSITION_SMOOTH_MIN_FACTOR = 0.3;
+  const POSITION_SMOOTH_MAX_FACTOR = 1.0;
+  const POSITION_SMOOTH_FULL_SNAP_M = 8;
+
+  function distMeters(a, b){
+    const R = 6371000;
+    const dLat = (b.lat - a.lat) * Math.PI / 180;
+    const dLon = (b.lon - a.lon) * Math.PI / 180;
+    const s = Math.sin(dLat/2)**2 + Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dLon/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(s));
+  }
+
+  function smoothPositionFix(candidate){
+    if (!smoothedFixCoords){ smoothedFixCoords = { lat: candidate.lat, lon: candidate.lon }; return smoothedFixCoords; }
+    const jumpM = distMeters(smoothedFixCoords, candidate);
+    const factor = jumpM >= POSITION_SMOOTH_FULL_SNAP_M
+      ? POSITION_SMOOTH_MAX_FACTOR
+      : POSITION_SMOOTH_MIN_FACTOR + (POSITION_SMOOTH_MAX_FACTOR - POSITION_SMOOTH_MIN_FACTOR) * (jumpM / POSITION_SMOOTH_FULL_SNAP_M);
+    smoothedFixCoords = {
+      lat: smoothedFixCoords.lat + (candidate.lat - smoothedFixCoords.lat) * factor,
+      lon: smoothedFixCoords.lon + (candidate.lon - smoothedFixCoords.lon) * factor,
+    };
+    return smoothedFixCoords;
+  }
+
+  function smoothHeadingFn(previous, raw, factor){
+    if (previous === null) return ((raw % 360) + 360) % 360;
+    const next = previous + shortestAngleDelta(previous, raw) * factor;
+    return ((next % 360) + 360) % 360;
+  }
+
+  let lastAcceptedFix = null; // {lat, lon, t}
+
+  function startLocationWatch(){
+    if (!('geolocation' in navigator)){
+      showToast('This device/browser has no GPS support.', true);
+      return;
+    }
+    if (watchId !== null) return;
+
+    watchId = navigator.geolocation.watchPosition(
+      onPositionUpdate,
+      onPositionError,
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+    );
+  }
+
+  function stopLocationWatch(){
+    if (watchId !== null){
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+  }
+
+  function onPositionUpdate(pos){
+    hideToast();
+    const raw = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+    const accuracy = pos.coords.accuracy;
+    const now = Date.now();
+
+    // Plausibility check: reject a fix that implies an impossible speed jump.
+    if (lastAcceptedFix){
+      const dt = (now - lastAcceptedFix.t) / 1000;
+      if (dt > 0){
+        const impliedMps = distMeters(lastAcceptedFix, raw) / dt;
+        if (impliedMps > GPS_MAX_PLAUSIBLE_SPEED_MPS) return; // likely a GPS glitch — ignore this fix
+      }
+    }
+    lastAcceptedFix = { lat: raw.lat, lon: raw.lon, t: now };
+
+    const smoothed = smoothPositionFix(raw);
+    let latlng = [smoothed.lat, smoothed.lon];
+    lastGoodLatLng = latlng;
+
+    // Speed (GPS reports m/s; below ~1.5 km/h it's just jitter while stopped).
+    const rawKmh = (typeof pos.coords.speed === 'number' && !isNaN(pos.coords.speed) && pos.coords.speed >= 0)
+      ? pos.coords.speed * 3.6 : 0;
+    const displaySpeed = rawKmh < 1.5 ? 0 : rawKmh;
+    smoothedSpeedKmh = smoothedSpeedKmh + (displaySpeed - smoothedSpeedKmh) * SPEED_SMOOTHING_FACTOR;
+    const speedPill = document.getElementById('speedPill');
+    speedPill.classList.add('visible');
+    document.getElementById('speedValue').textContent = Math.round(smoothedSpeedKmh);
+
+    // Heading — GPS course-over-ground is authoritative above walking pace;
+    // below that it's noise, so we just hold the last known heading.
+    const isMoving = smoothedSpeedKmh >= 2.2;
+    const puckWrap = document.getElementById('puckWrap');
+    if (puckWrap) puckWrap.classList.toggle('is-moving', isMoving);
+
+    if (typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading) &&
+        typeof pos.coords.speed === 'number' && pos.coords.speed >= GPS_HEADING_MIN_SPEED_MPS){
+      smoothedHeading = smoothHeadingFn(smoothedHeading, pos.coords.heading, HEADING_SMOOTHING_FACTOR);
+      lastGpsHeadingAt = now;
+    }
+
+    // While navigating, snap the puck onto the calculated route polyline so
+    // it glides along the road/path instead of drifting with raw GPS noise.
+    let displayLatLng = latlng;
+    if (navState === 'navigating' && routeLatLngs && routeLatLngs.length > 1){
+      const snap = snapToRoute({ lat: latlng[0], lon: latlng[1] }, routeLatLngs);
+      if (snap) displayLatLng = [snap.lat, snap.lon];
+    }
+
+    if (!userMarker){
+      userMarker = L.marker(displayLatLng, { icon: blueDotIcon, zIndexOffset: 1000 }).addTo(map);
+    } else {
+      userMarker.setLatLng(displayLatLng);
+    }
+
+    if (!accuracyCircle){
+      accuracyCircle = L.circle(latlng, { radius: accuracy, color: '#4285F4', weight: 1, fillColor: '#4285F4', fillOpacity: 0.08 }).addTo(map);
+    } else {
+      accuracyCircle.setLatLng(latlng);
+      accuracyCircle.setRadius(accuracy);
+    }
+
+    if (followMode){
+      map.panTo(displayLatLng, { animate: true, duration: 0.3 });
+      if (headingUpMode && smoothedHeading !== null && (now - lastGpsHeadingAt) < GPS_HEADING_FRESH_MS){
+        applyMapBearing(smoothedHeading);
+      }
+    }
+    if (!followMode || !headingUpMode){
+      const arrow = document.getElementById('puckArrow');
+      if (arrow) arrow.style.transform = `rotate(${smoothedHeading || 0}deg)`;
+    }
+
+    // Feed the fix into the active navigation session, if any.
+    if (navState === 'navigating'){
+      updateNavigationProgress({ lat: latlng[0], lon: latlng[1] });
+    }
+  }
+
+  function onPositionError(err){
+    if (err.code === err.PERMISSION_DENIED){
+      showToast('Location access denied — enable it in your browser settings to navigate.', true);
+    } else if (err.code === err.TIMEOUT){
+      showToast('Still waiting for a GPS fix…');
+    } else {
+      showToast('GPS signal lost — retrying…');
+    }
+  }
+
+  // Kick GPS tracking off immediately — no login gate in this build.
+  startLocationWatch();
+
+  // ---------------------------------------------------------------
+  // WAKE LOCK — keep the screen on while actively navigating
+  // ---------------------------------------------------------------
+  let wakeLock = null;
+  async function requestWakeLock(){
+    if (!('wakeLock' in navigator)) return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch (_) { /* denied (e.g. low battery mode) — non-fatal */ }
+  }
+  function releaseWakeLock(){
+    if (wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible' && !wakeLock && navState === 'navigating') requestWakeLock();
+  });
+
+  // =================================================================
+  // MULTI-MODAL ROUTING ENGINE
+  // =================================================================
+
+  // Public OSRM demo instances, one per travel profile. Free/keyless but
+  // rate-limited — swap these hosts for a self-hosted OSRM cluster (or a
+  // commercial routing API) before putting this in front of real traffic.
+  const OSRM_ENDPOINTS = {
+    driving: { host: 'https://routing.openstreetmap.de/routed-car',  profile: 'driving' },
+    cycling: { host: 'https://routing.openstreetmap.de/routed-bike', profile: 'bike'    },
+    walking: { host: 'https://routing.openstreetmap.de/routed-foot', profile: 'foot'    },
+  };
+
+  const AVG_SPEED_MPS_FALLBACK = { driving: 13.9, cycling: 4.5, walking: 1.35 }; // ~50/16/4.9 km/h, used only if a route response omits duration
+  const ARRIVAL_THRESHOLD_M   = { driving: 30, cycling: 18, walking: 12 };
+  const OFFROUTE_THRESHOLD_M  = { driving: 40, cycling: 30, walking: 20 };
+  const RECALC_COOLDOWN_MS = 15000;
+
+  let selectedMode = 'driving';
+  let destination = null;       // { lat, lon, label }
+  let destMarker = null;
+  let routeLayer = null;
+  let routeLatLngs = null;      // [{lat,lon}, ...] flattened route geometry
+  let routeSteps = null;        // OSRM steps array
+  let routeTotalDistanceM = 0;
+  let routeTotalDurationS = 0;
+  let currentStepIndex = 0;
+  let navState = 'idle';        // 'idle' | 'previewing' | 'navigating'
+  let lastRecalcAt = 0;
+  let navArrived = false;
+
+  const searchCard   = document.getElementById('searchCard');
+  const destInput     = document.getElementById('destInput');
+  const clearDestBtn  = document.getElementById('clearDestBtn');
+  const suggestionsList = document.getElementById('suggestionsList');
+  const modePills      = document.querySelectorAll('.mode-pill');
+  const routeSummary   = document.getElementById('routeSummary');
+  const rsTime         = document.getElementById('rsTime');
+  const rsSub          = document.getElementById('rsSub');
+  const routeErrorBox  = document.getElementById('routeError');
+  const startNavBtn    = document.getElementById('startNavBtn');
+  const hudTurnPanel   = document.getElementById('hudTurnPanel');
+  const hudMetricsBar  = document.getElementById('hudMetricsBar');
+  const exitNavBtn     = document.getElementById('exitNavBtn');
+  const recalcBanner   = document.getElementById('recalcBanner');
+  const maneuverIconWrap = document.getElementById('maneuverIconWrap');
+
+  const destPinIcon = L.divIcon({
+    className: 'dest-pin',
+    html: `<svg width="34" height="44" viewBox="0 0 34 44" fill="none">
+             <path d="M17 0C7.6 0 0 7.6 0 17c0 12.5 17 27 17 27s17-14.5 17-27C34 7.6 26.4 0 17 0z" fill="#FF6B35"/>
+             <circle cx="17" cy="17" r="6.5" fill="#0B1220"/>
+           </svg>`,
+    iconSize: [34, 44],
+    iconAnchor: [17, 44],
+  });
+
+  function showRouteError(msg){
+    routeErrorBox.textContent = msg;
+    routeErrorBox.classList.add('visible');
+  }
+  function hideRouteError(){ routeErrorBox.classList.remove('visible'); }
+
+  function formatDistance(m){
+    if (m < 1000) return `${Math.round(m)} m`;
+    return `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km`;
+  }
+  function formatDuration(s){
+    const totalMin = Math.round(s / 60);
+    if (totalMin < 60) return `${Math.max(totalMin, 1)} min`;
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${h} h ${m} min`;
+  }
+  function formatClock(date){
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // ---------------------------------------------------------------
+  // GEOCODING (destination search) — Nominatim, debounced
+  // ---------------------------------------------------------------
+  let searchDebounce = null;
+  let searchToken = 0;
+
+  destInput.addEventListener('input', () => {
+    clearDestBtn.classList.toggle('visible', destInput.value.length > 0);
+    const q = destInput.value.trim();
+    clearTimeout(searchDebounce);
+    if (q.length < 3){
+      suggestionsList.classList.remove('visible');
+      suggestionsList.innerHTML = '';
+      return;
+    }
+    searchDebounce = setTimeout(() => runGeocodeSearch(q), 350);
+  });
+
+  clearDestBtn.addEventListener('click', () => {
+    destInput.value = '';
+    clearDestBtn.classList.remove('visible');
+    suggestionsList.classList.remove('visible');
+    suggestionsList.innerHTML = '';
+    clearRoute();
+  });
+
+  async function runGeocodeSearch(query){
+    const thisToken = ++searchToken;
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=0&q=${encodeURIComponent(query)}`;
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (thisToken !== searchToken) return; // a newer keystroke superseded this request
+      if (!res.ok) throw new Error('Search failed');
+      const results = await res.json();
+      renderSuggestions(results);
+    } catch (_) {
+      if (thisToken === searchToken) showToast('Search is unavailable right now.');
+    }
+  }
+
+  function renderSuggestions(results){
+    suggestionsList.innerHTML = '';
+    if (!results.length){
+      suggestionsList.classList.remove('visible');
+      return;
+    }
+    results.forEach(r => {
+      const parts = r.display_name.split(',');
+      const title = parts[0].trim();
+      const sub = parts.slice(1, 4).join(',').trim();
+      const item = document.createElement('div');
+      item.className = 'suggestion-item';
+      item.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--steel); flex-shrink:0; margin-top:2px;"><path d="M21 10c0 6-9 12-9 12s-9-6-9-12a9 9 0 1118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        <div><div class="s-title"></div><div class="s-sub"></div></div>`;
+      item.querySelector('.s-title').textContent = title;
+      item.querySelector('.s-sub').textContent = sub;
+      item.addEventListener('click', () => {
+        destInput.value = title;
+        suggestionsList.classList.remove('visible');
+        setDestination(parseFloat(r.lat), parseFloat(r.lon), title);
+      });
+      suggestionsList.appendChild(item);
+    });
+    suggestionsList.classList.add('visible');
+  }
+
+  // Tap-to-set destination directly on the map (only while browsing, not mid-nav)
+  map.on('click', (e) => {
+    if (navState === 'navigating') return;
+    suggestionsList.classList.remove('visible');
+    destInput.value = `Dropped pin (${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)})`;
+    setDestination(e.latlng.lat, e.latlng.lng, 'Dropped pin');
+  });
+
+  function setDestination(lat, lon, label){
+    destination = { lat, lon, label };
+    if (!destMarker){
+      destMarker = L.marker([lat, lon], { icon: destPinIcon }).addTo(map);
+    } else {
+      destMarker.setLatLng([lat, lon]);
+    }
+    computeRoute();
+  }
+
+  function clearRoute(){
+    destination = null;
+    routeLatLngs = null;
+    routeSteps = null;
+    if (destMarker){ map.removeLayer(destMarker); destMarker = null; }
+    if (routeLayer){ map.removeLayer(routeLayer); routeLayer = null; }
+    routeSummary.classList.remove('visible');
+    hideRouteError();
+  }
+
+  // ---------------------------------------------------------------
+  // MODE SELECTOR
+  // ---------------------------------------------------------------
+  modePills.forEach(btn => {
+    btn.addEventListener('click', () => {
+      selectedMode = btn.dataset.mode;
+      modePills.forEach(b => b.classList.toggle('active', b === btn));
+      if (destination) computeRoute();
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // ROUTE FETCH (OSRM)
+  // ---------------------------------------------------------------
+  let routeFetchToken = 0;
+
+  async function fetchRoute(originLatLon, destLatLon, mode){
+    const ep = OSRM_ENDPOINTS[mode];
+    const coords = `${originLatLon.lon},${originLatLon.lat};${destLatLon.lon},${destLatLon.lat}`;
+    const url = `${ep.host}/route/v1/${ep.profile}/${coords}?overview=full&geometries=geojson&steps=true`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Routing service error');
+    const data = await res.json();
+    if (data.code !== 'Ok' || !data.routes || !data.routes.length) throw new Error('No route found');
+    return data.routes[0];
+  }
+
+  async function computeRoute(){
+    if (!destination){ return; }
+    if (!lastGoodLatLng){
+      showRouteError('Waiting for a GPS fix before routing — hang tight.');
+      return;
+    }
+    hideRouteError();
+    const thisToken = ++routeFetchToken;
+    startNavBtn.disabled = true;
+
+    try {
+      const origin = { lat: lastGoodLatLng[0], lon: lastGoodLatLng[1] };
+      const route = await fetchRoute(origin, { lat: destination.lat, lon: destination.lon }, selectedMode);
+      if (thisToken !== routeFetchToken) return; // superseded by a newer request (mode switch, etc.)
+
+      drawRoute(route);
+      routeTotalDistanceM = route.distance;
+      routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
+      routeSteps = route.legs[0].steps;
+      currentStepIndex = 0;
+
+      rsTime.textContent = formatDuration(routeTotalDurationS);
+      rsSub.textContent = `${formatDistance(routeTotalDistanceM)} · arrive ${formatClock(new Date(Date.now() + routeTotalDurationS * 1000))}`;
+      routeSummary.classList.add('visible');
+      navState = 'previewing';
+    } catch (err) {
+      if (thisToken !== routeFetchToken) return;
+      showRouteError("Couldn't calculate a route for this mode — try again or pick another destination.");
+      routeSummary.classList.remove('visible');
+    } finally {
+      if (thisToken === routeFetchToken) startNavBtn.disabled = false;
+    }
+  }
+
+  function drawRoute(route){
+    const latlngs = route.geometry.coordinates.map(c => [c[1], c[0]]);
+    routeLatLngs = route.geometry.coordinates.map(c => ({ lat: c[1], lon: c[0] }));
+    if (routeLayer) map.removeLayer(routeLayer);
+    routeLayer = L.polyline(latlngs, { color: '#C6F135', weight: 5, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+    if (navState !== 'navigating'){
+      map.fitBounds(routeLayer.getBounds(), { padding: [60, 60] });
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // MANEUVER ICONS + INSTRUCTION TEXT (built from OSRM step data)
+  // ---------------------------------------------------------------
+  const MODIFIER_ANGLE = {
+    straight: 0, 'slight right': 30, right: 90, 'sharp right': 135,
+    uturn: 180, 'sharp left': -135, left: -90, 'slight left': -30,
+  };
+  const MODIFIER_WORD = {
+    straight: 'straight ahead', 'slight right': 'slightly right', right: 'right', 'sharp right': 'sharply right',
+    uturn: 'around', 'sharp left': 'sharply left', left: 'left', 'slight left': 'slightly left',
+  };
+
+  function arrowSvg(rotationDeg){
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="#0B1220" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(${rotationDeg}deg)"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg>`;
+  }
+  const ICONS = {
+    depart: `<svg viewBox="0 0 24 24" fill="none" stroke="#0B1220" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="4" fill="#0B1220"/></svg>`,
+    arrive: `<svg viewBox="0 0 24 24" fill="none" stroke="#0B1220" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 21V4h11l-3 4 3 4H6"/></svg>`,
+    roundabout: `<svg viewBox="0 0 24 24" fill="none" stroke="#0B1220" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><path d="M12 5v4l3-1"/></svg>`,
+    merge: `<svg viewBox="0 0 24 24" fill="none" stroke="#0B1220" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20V10l6-6 6 6v10M12 4v10"/></svg>`,
+  };
+
+  function maneuverIconHtml(step){
+    const type = step && step.maneuver ? step.maneuver.type : null;
+    const modifier = (step && step.maneuver && step.maneuver.modifier) || 'straight';
+    if (type === 'depart') return ICONS.depart;
+    if (type === 'arrive') return ICONS.arrive;
+    if (type === 'roundabout' || type === 'rotary') return ICONS.roundabout;
+    if (type === 'merge') return ICONS.merge;
+    const angle = MODIFIER_ANGLE[modifier];
+    return arrowSvg(typeof angle === 'number' ? angle : 0);
+  }
+
+  function instructionForStep(step){
+    if (!step) return 'Continue';
+    const type = step.maneuver.type;
+    const modifier = step.maneuver.modifier;
+    const name = step.name && step.name.trim() ? step.name.trim() : 'the road';
+    switch (type){
+      case 'depart':   return `Head ${modifier ? MODIFIER_WORD[modifier] + ' ' : ''}on ${name}`;
+      case 'arrive':   return 'Arrive at your destination';
+      case 'roundabout':
+      case 'rotary':   return `Enter the roundabout${step.maneuver.exit ? `, take exit ${step.maneuver.exit}` : ''}`;
+      case 'turn':     return `Turn ${MODIFIER_WORD[modifier] || ''} onto ${name}`;
+      case 'continue': return `Continue ${MODIFIER_WORD[modifier] || 'straight'} on ${name}`;
+      case 'merge':    return `Merge onto ${name}`;
+      case 'fork':     return `Keep ${MODIFIER_WORD[modifier] || 'straight'} at the fork onto ${name}`;
+      case 'on ramp':  return `Take the ramp onto ${name}`;
+      case 'off ramp': return `Take the exit onto ${name}`;
+      case 'new name': return `Continue onto ${name}`;
+      case 'end of road': return `Turn ${MODIFIER_WORD[modifier] || ''} onto ${name}`;
+      default:         return `Continue onto ${name}`;
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // ROUTE SNAPPING — projects a raw GPS fix onto the nearest point on
+  // the route polyline, using a local equirectangular approximation
+  // (accurate enough over the few-km spans a single route segment covers).
+  // ---------------------------------------------------------------
+  function snapToRoute(pos, coords){
+    if (!coords || coords.length < 2) return null;
+    const latRad = pos.lat * Math.PI / 180;
+    const kx = Math.cos(latRad); // longitude scale factor at this latitude
+
+    let best = null;
+    let bestDist = Infinity;
+
+    for (let i = 0; i < coords.length - 1; i++){
+      const a = coords[i], b = coords[i + 1];
+      const ax = a.lon * kx, ay = a.lat;
+      const bx = b.lon * kx, by = b.lat;
+      const px = pos.lon * kx, py = pos.lat;
+
+      const dx = bx - ax, dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+      let t = lenSq > 0 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+      t = Math.max(0, Math.min(1, t));
+
+      const projX = ax + t * dx, projY = ay + t * dy;
+      const projLat = projY, projLon = projX / kx;
+      const d = distMeters(pos, { lat: projLat, lon: projLon });
+      if (d < bestDist){
+        bestDist = d;
+        best = { lat: projLat, lon: projLon, distanceFromRoute: d, segmentIndex: i };
+      }
+    }
+    return best;
+  }
+
+  // ---------------------------------------------------------------
+  // NAVIGATION CONTROLLER
+  // ---------------------------------------------------------------
+  startNavBtn.addEventListener('click', startNavigation);
+  exitNavBtn.addEventListener('click', stopNavigation);
+
+  function startNavigation(){
+    if (!routeSteps || !routeLatLngs) return;
+    navState = 'navigating';
+    navArrived = false;
+    currentStepIndex = 0;
+    lastRecalcAt = Date.now();
+
+    searchCard.classList.add('hidden-card');
+    hudTurnPanel.classList.add('visible');
+    hudMetricsBar.classList.add('visible');
+
+    setFollowState(true, true);
+    requestWakeLock();
+    refreshTurnPanel();
+  }
+
+  function stopNavigation(){
+    navState = 'previewing';
+    hudTurnPanel.classList.remove('visible');
+    hudMetricsBar.classList.remove('visible');
+    recalcBanner.classList.remove('visible');
+    searchCard.classList.remove('hidden-card');
+    releaseWakeLock();
+    setFollowState(false, false);
+  }
+
+  function stepLatLng(step){
+    const loc = step.maneuver.location; // [lon, lat]
+    return { lat: loc[1], lon: loc[0] };
+  }
+
+  function updateNavigationProgress(pos){
+    if (!routeSteps || navArrived) return;
+
+    // Off-route detection + throttled recalculation
+    const snap = snapToRoute(pos, routeLatLngs);
+    if (snap && snap.distanceFromRoute > OFFROUTE_THRESHOLD_M[selectedMode]){
+      const now = Date.now();
+      if (now - lastRecalcAt > RECALC_COOLDOWN_MS){
+        lastRecalcAt = now;
+        recalculateActiveRoute(pos);
+      }
+    }
+
+    // Advance through steps as maneuvers are reached
+    let nextStep = routeSteps[currentStepIndex + 1];
+    if (nextStep){
+      let distToManeuver = distMeters(pos, stepLatLng(nextStep));
+      if (distToManeuver < ARRIVAL_THRESHOLD_M[selectedMode] && currentStepIndex + 1 < routeSteps.length - 1){
+        currentStepIndex++;
+        nextStep = routeSteps[currentStepIndex + 1];
+        distToManeuver = nextStep ? distMeters(pos, stepLatLng(nextStep)) : 0;
+      } else if (distToManeuver < ARRIVAL_THRESHOLD_M[selectedMode] && currentStepIndex + 1 === routeSteps.length - 1){
+        // Reached the arrive step
+        navArrived = true;
+        showArrivedState();
+        return;
+      }
+    }
+
+    refreshTurnPanel(pos);
+    refreshMetricsBar(pos);
+  }
+
+  async function recalculateActiveRoute(pos){
+    recalcBanner.classList.add('visible');
+    try {
+      const route = await fetchRoute(pos, { lat: destination.lat, lon: destination.lon }, selectedMode);
+      drawRoute(route);
+      routeTotalDistanceM = route.distance;
+      routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
+      routeSteps = route.legs[0].steps;
+      currentStepIndex = 0;
+    } catch (_) {
+      showToast('Recalculation failed — keep going, retrying shortly.');
+    } finally {
+      recalcBanner.classList.remove('visible');
+    }
+  }
+
+  function refreshTurnPanel(pos){
+    const nextStep = routeSteps[currentStepIndex + 1];
+    maneuverIconWrap.innerHTML = maneuverIconHtml(nextStep);
+    document.getElementById('turnInstruction').textContent = instructionForStep(nextStep);
+    if (pos && nextStep){
+      const dist = distMeters(pos, stepLatLng(nextStep));
+      document.getElementById('turnDistance').textContent = dist < 30 ? 'Now' : `In ${formatDistance(dist)}`;
+    } else {
+      document.getElementById('turnDistance').textContent = nextStep ? formatDistance(nextStep.distance || 0) : '—';
+    }
+  }
+
+  function refreshMetricsBar(pos){
+    const nextStep = routeSteps[currentStepIndex + 1];
+    let remainingDistance = 0;
+    if (nextStep) remainingDistance += distMeters(pos, stepLatLng(nextStep));
+    for (let i = currentStepIndex + 1; i < routeSteps.length - 1; i++){
+      remainingDistance += routeSteps[i].distance || 0;
+    }
+    // Time remaining scaled by the route's own overall pace — a lightweight
+    // approximation rather than a full remaining-duration recomputation.
+    const overallPaceSPerM = routeTotalDistanceM > 0 ? routeTotalDurationS / routeTotalDistanceM : (1 / AVG_SPEED_MPS_FALLBACK[selectedMode]);
+    const remainingSeconds = remainingDistance * overallPaceSPerM;
+
+    document.getElementById('metricTime').textContent = formatDuration(remainingSeconds);
+    document.getElementById('metricDistance').textContent = formatDistance(remainingDistance);
+    document.getElementById('metricEta').textContent = formatClock(new Date(Date.now() + remainingSeconds * 1000));
+  }
+
+  function showArrivedState(){
+    maneuverIconWrap.innerHTML = ICONS.arrive;
+    document.getElementById('turnInstruction').textContent = 'You have arrived';
+    document.getElementById('turnDistance').textContent = 'Destination';
+    document.getElementById('metricTime').textContent = '0 min';
+    document.getElementById('metricDistance').textContent = '0 m';
+    document.getElementById('metricEta').textContent = formatClock(new Date());
+    showToast('You have arrived at your destination.', true);
+  }
+</script>
+</body>
+</html>
