@@ -1720,7 +1720,10 @@
 
   themePills.forEach(btn => btn.addEventListener('click', () => applyTheme(btn.dataset.themeChoice)));
   function updateThemePillsUI(){
-    themePills.forEach(b => b.classList.toggle('active', b.dataset.themeChoice === themeMode));
+    // Queried fresh (rather than via the module-scoped `themePills` const declared
+    // further down) because applyTheme() runs once at startup, before that const
+    // initializes — a plain DOM query has no such load-order dependency.
+    document.querySelectorAll('#themePills .mode-pill').forEach(b => b.classList.toggle('active', b.dataset.themeChoice === themeMode));
   }
 
   soundToggleBtn.addEventListener('click', () => {
