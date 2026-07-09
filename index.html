@@ -1002,16 +1002,21 @@
 
   // ---------------------------------------------------------------
   // ---------------------------------------------------------------
+  // ---------------------------------------------------------------
   // OVERPASS REQUEST GATE — shared by speed-limit lookups and POI category
   // fetches. The public overpass-api.de instance is aggressively rate-limited
   // (429s) once more than one caller hits it independently, so every request
   // funnels through here: a minimum gap between calls, plus a cooldown that
-  // kicks in and silently skips further requests for a while after a 429.
+  // kicks in and silently skips further requests for a while after a 429 —
+  // and a hard timeout so a slow/unreachable server fails fast instead of
+  // hanging the request indefinitely.
   // ---------------------------------------------------------------
   let lastOverpassRequestAt = 0;
   let overpassBackoffUntil = 0;
   const OVERPASS_MIN_GAP_MS = 3000;
   const OVERPASS_429_COOLDOWN_MS = 60000;
+  const OVERPASS_TIMEOUT_COOLDOWN_MS = 20000;
+  const OVERPASS_FETCH_TIMEOUT_MS = 10000;
 
   async function overpassFetch(query){
     const now = Date.now();
@@ -1019,7 +1024,19 @@
     const wait = Math.max(0, lastOverpassRequestAt + OVERPASS_MIN_GAP_MS - now);
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     lastOverpassRequestAt = Date.now();
-    const res = await fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), OVERPASS_FETCH_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query), { signal: controller.signal });
+    } catch (err) {
+      overpassBackoffUntil = Date.now() + OVERPASS_TIMEOUT_COOLDOWN_MS;
+      throw new Error('overpass-timeout');
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
     if (res.status === 429){
       overpassBackoffUntil = Date.now() + OVERPASS_429_COOLDOWN_MS;
       throw new Error('overpass-429');
