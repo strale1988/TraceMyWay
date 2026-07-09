@@ -727,6 +727,39 @@
   const DEFAULT_ZOOM = 4;              // continent-level overview
 
   // ---------------------------------------------------------------
+  // MAP + LEAFLET SETUP
+  // Moved above the theme system on purpose: the theme system's "auto" mode
+  // can call setBasemap() synchronously during its own setup (e.g. via
+  // refreshAmbientFromClock() below), and setBasemap() needs `map` and
+  // `TILE_URLS` to already exist. Declaring them after the theme system used
+  // to throw "Cannot access 'TILE_URLS' before initialization" on any load
+  // where themeMode was 'auto' (i.e. any device without a previously saved
+  // theme preference in localStorage) — a same-script TDZ crash that killed
+  // the whole app before it ever rendered.
+  // ---------------------------------------------------------------
+  const map = L.map('map', {
+    zoomControl: false,
+    attributionControl: true,
+    center: DEFAULT_CENTER,
+    zoom: DEFAULT_ZOOM,
+  });
+
+  const TILE_URLS = {
+    dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+  };
+  let currentTileLayer = null;
+  function setBasemap(effTheme){
+    const url = effTheme === 'light' ? TILE_URLS.light : TILE_URLS.dark;
+    if (currentTileLayer) map.removeLayer(currentTileLayer);
+    currentTileLayer = L.tileLayer(url, {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      subdomains: 'abcd', maxZoom: 20,
+    }).addTo(map);
+    currentTileLayer.bringToBack();
+  }
+
+  // ---------------------------------------------------------------
   // THEME SYSTEM — light / dark / auto, persisted
   // "Auto" tracks real-world darkness rather than just the OS's light/dark
   // setting: it prefers a live ambient-light sensor when the device exposes
@@ -793,31 +826,6 @@
     updateThemePillsUI();
   }
   lightMedia.addEventListener('change', () => { if (themeMode === 'auto' && ambientIsDark === null) applyTheme('auto'); });
-
-  // ---------------------------------------------------------------
-  // MAP + LEAFLET SETUP
-  // ---------------------------------------------------------------
-  const map = L.map('map', {
-    zoomControl: false,
-    attributionControl: true,
-    center: DEFAULT_CENTER,
-    zoom: DEFAULT_ZOOM,
-  });
-
-  const TILE_URLS = {
-    dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-  };
-  let currentTileLayer = null;
-  function setBasemap(effTheme){
-    const url = effTheme === 'light' ? TILE_URLS.light : TILE_URLS.dark;
-    if (currentTileLayer) map.removeLayer(currentTileLayer);
-    currentTileLayer = L.tileLayer(url, {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-      subdomains: 'abcd', maxZoom: 20,
-    }).addTo(map);
-    currentTileLayer.bringToBack();
-  }
 
   // Reparents Leaflet's internal map-pane (tiles + markers + lines) inside a
   // plain div we control, so *that* div can be CSS-rotated for heading-up
