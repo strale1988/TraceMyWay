@@ -207,12 +207,16 @@
     position: fixed;
     right: 16px;
     bottom: calc(24px + env(safe-area-inset-bottom, 0px));
-    z-index: 600;
+    z-index: 720;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 14px;
+    transition: bottom .2s ease;
   }
+  /* While navigating, #hudMetricsBar occupies the same bottom-right area —
+     push the compass/follow stack up above it instead of letting it hide. */
+  body.nav-active .float-stack{ bottom: calc(112px + env(safe-area-inset-bottom, 0px)); }
   .icon-btn{
     width: 48px; height: 48px;
     border-radius: 50%;
@@ -227,6 +231,17 @@
   .icon-btn.following{ color: var(--hiviz); border-color: rgba(36,99,214,0.4); }
   .icon-btn.heading-up{ background: var(--hiviz); color: var(--asphalt); border-color: var(--hiviz); }
 
+  /* Settings button — fixed independently of the header so it can sit above
+     the search card / HUD turn panel, which both span the full width at the
+     same top offset on narrow (mobile-portrait) viewports. */
+  .icon-btn-settings{
+    position: fixed;
+    top: calc(16px + env(safe-area-inset-top, 0px));
+    right: 16px;
+    z-index: 720;
+    width: 44px; height: 44px;
+  }
+
   /* Compass widget */
   .compass-btn{ position: relative; overflow: hidden; }
   .compass-dial{
@@ -239,12 +254,16 @@
     position: fixed;
     top: calc(64px + env(safe-area-inset-top, 0px));
     left: 16px;
-    z-index: 600;
+    z-index: 720;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 8px;
+    transition: top .2s ease;
   }
+  /* While navigating, #hudTurnPanel occupies the top area — push the speed
+     cluster down below it instead of letting it hide underneath. */
+  body.nav-active #speedCluster{ top: calc(112px + env(safe-area-inset-top, 0px)); }
   #speedPill{
     background: var(--panel-hi);
     border: 1px solid var(--line);
@@ -350,6 +369,25 @@
   .poi-chip .chip-dot{ width:8px; height:8px; border-radius:50%; }
   .poi-chip.active{ border-color: var(--hiviz); color: var(--fog); background: rgba(36,99,214,0.12); }
 
+  /* Route options (avoid highways / ferries / unpaved, alternatives) — same
+     pill styling as the POI chip row for visual consistency. */
+  .route-options-title{ font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color: var(--steel); margin-top:10px; }
+  #routeOptionsRow{ margin-top:6px; }
+
+  #altRoutesList{ display:none; flex-direction:column; gap:6px; margin-top:10px; }
+  #altRoutesList.visible{ display:flex; }
+  .alt-route-item{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 12px; border-radius:12px;
+    background: var(--panel-hi); border:1px solid var(--line); color: var(--steel);
+    text-align:left;
+  }
+  .alt-route-item.active{ border-color: var(--hiviz); color: var(--fog); background: rgba(36,99,214,0.12); }
+  .alt-route-item .art-time{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:14.5px; color: var(--fog); }
+  .alt-route-item.active .art-time{ color: var(--hiviz); }
+  .alt-route-item .art-dist{ font-size:11.5px; color: inherit; }
+  .alt-route-item .art-label{ font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.75; }
+
   #tripList{ display:none; flex-direction:column; margin-top:10px; gap:2px; }
   #tripList.visible{ display:flex; }
   .trip-row{
@@ -440,6 +478,19 @@
   .settings-row-title{ font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color: var(--steel); margin-bottom:8px; }
 
   .fade-out{ opacity: 0; pointer-events: none; }
+
+  /* ---- Small / narrow phones (portrait) ---- */
+  @media (max-width: 380px){
+    .icon-btn{ width: 42px; height: 42px; }
+    .icon-btn-settings{ width: 40px; height: 40px; top: calc(12px + env(safe-area-inset-top, 0px)); right: 12px; }
+    .float-stack{ right: 12px; gap: 10px; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+    body.nav-active .float-stack{ bottom: calc(100px + env(safe-area-inset-bottom, 0px)); }
+    #speedCluster{ left: 12px; top: calc(60px + env(safe-area-inset-top, 0px)); }
+    body.nav-active #speedCluster{ top: calc(104px + env(safe-area-inset-top, 0px)); }
+    #speedLimitSign .sign-circle{ width: 44px; height: 44px; }
+    #searchCard, #hudTurnPanel{ left: 10px; right: 10px; padding: 12px; }
+    #hudMetricsBar{ left: 10px; right: 10px; }
+  }
 </style>
 </head>
 <body class="h-full w-full">
@@ -447,20 +498,13 @@
   <!-- ============ MAP LAYER ============ -->
   <div id="map" aria-hidden="true"></div>
 
-  <!-- Top status bar -->
-  <header class="fixed top-0 inset-x-0 z-[650] flex items-center justify-between px-4 py-3
-                  bg-gradient-to-b from-[var(--asphalt)]/90 to-transparent pointer-events-none">
-    <div class="flex items-center gap-2 pointer-events-auto">
-      <img src="./icons/TraceMyWay.png" alt="TraceMyWay" class="w-8 h-8 rounded-md flex-shrink-0 shadow-lg object-contain" />
-      <span class="font-display font-700 text-lg tracking-wide">TRACE<span class="text-[var(--hiviz)]">MY</span>WAY</span>
-    </div>
-    <button id="settingsBtnHeader" class="pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center" title="Settings">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3"></circle>
-        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.24.6.79 1 1.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"></path>
-      </svg>
-    </button>
-  </header>
+  <!-- Settings button — floating, above the search card / HUD so it never gets buried -->
+  <button id="settingsBtnHeader" class="icon-btn icon-btn-settings" title="Settings">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.24.6.79 1 1.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"></path>
+    </svg>
+  </button>
 
   <!-- Floating status pills -->
   <div id="speedCluster">
@@ -500,11 +544,21 @@
       </button>
     </div>
 
+    <div class="route-options-title">Route options</div>
+    <div class="poi-chip-row" id="routeOptionsRow">
+      <button class="poi-chip" data-opt="highway" title="Avoid motorways/highways"><span>Avoid highways</span></button>
+      <button class="poi-chip" data-opt="ferry" title="Avoid ferry crossings"><span>Avoid ferries</span></button>
+      <button class="poi-chip" data-opt="unpaved" title="Prefer paved roads"><span>Avoid unpaved</span></button>
+      <button class="poi-chip" data-opt="alternatives" title="Show alternative routes to choose from"><span>Alternatives</span></button>
+    </div>
+
     <div class="poi-chip-row" id="poiChipRow"></div>
 
     <div id="tripList"></div>
 
     <div id="routeError"></div>
+
+    <div id="altRoutesList"></div>
 
     <div id="routeSummary">
       <div class="rs-stats">
@@ -1118,6 +1172,15 @@
   let navState = 'idle';        // 'idle' | 'previewing' | 'navigating'
   let lastRecalcAt = 0;
   let navArrived = false;
+
+  // Route preference toggles (chips under the destination search box).
+  // "unpaved" is best-effort: not every OSRM profile on the public demo
+  // server recognizes that exclude class, so computeRoute() retries without
+  // it if the server rejects the request.
+  const routeAvoid = { highway: false, ferry: false, unpaved: false };
+  let routeShowAlternatives = false;
+  let availableRoutes = [];   // all routes returned for the current request
+  let selectedRouteIndex = 0;
   let alertedStepIndexForTurn = null;
 
   const searchCard   = document.getElementById('searchCard');
@@ -1137,6 +1200,8 @@
   const exitNavBtn     = document.getElementById('exitNavBtn');
   const recalcBanner   = document.getElementById('recalcBanner');
   const maneuverIconWrap = document.getElementById('maneuverIconWrap');
+  const routeOptionsRow = document.getElementById('routeOptionsRow');
+  const altRoutesList   = document.getElementById('altRoutesList');
 
   const destPinIcon = L.divIcon({
     className: 'dest-pin',
@@ -1208,6 +1273,8 @@
     if (routeLayer){ map.removeLayer(routeLayer); routeLayer = null; }
     routeLatLngs = null;
     routeSteps = null;
+    availableRoutes = [];
+    renderAltRoutes();
     routeSummary.classList.remove('visible');
     hideRouteError();
     renderTripList();
@@ -1445,15 +1512,18 @@
   // ---------------------------------------------------------------
   let routeFetchToken = 0;
 
-  async function fetchRoute(points, mode){
+  async function fetchRoute(points, mode, opts = {}){
     const ep = OSRM_ENDPOINTS[mode];
     const coords = points.map(p => `${p.lon},${p.lat}`).join(';');
-    const url = `${ep.host}/route/v1/${ep.profile}/${coords}?overview=full&geometries=geojson&steps=true`;
+    const params = new URLSearchParams({ overview: 'full', geometries: 'geojson', steps: 'true' });
+    if (opts.alternatives) params.set('alternatives', 'true');
+    if (opts.excludes && opts.excludes.length) params.set('exclude', opts.excludes.join(','));
+    const url = `${ep.host}/route/v1/${ep.profile}/${coords}?${params.toString()}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error('Routing service error');
     const data = await res.json();
-    if (data.code !== 'Ok' || !data.routes || !data.routes.length) throw new Error('No route found');
-    return data.routes[0];
+    if (data.code !== 'Ok' || !data.routes || !data.routes.length) throw new Error(data.message || 'No route found');
+    return data.routes; // all routes (1, or several when alternatives were requested)
   }
 
   // Flattens per-leg OSRM steps into one ordered array. Each 'arrive' step
@@ -1483,8 +1553,32 @@
     try {
       const origin = { lat: lastGoodLatLng[0], lon: lastGoodLatLng[1] };
       const points = [origin, ...waypoints, destination];
-      const route = await fetchRoute(points, selectedMode);
+
+      const excludes = [];
+      if (routeAvoid.highway) excludes.push('motorway');
+      if (routeAvoid.ferry) excludes.push('ferry');
+      if (routeAvoid.unpaved) excludes.push('unpaved');
+
+      let routes;
+      let degraded = false;
+      try {
+        routes = await fetchRoute(points, selectedMode, { excludes, alternatives: routeShowAlternatives });
+      } catch (err) {
+        // The public OSRM demo profile may not recognize every exclude class
+        // (e.g. "unpaved" isn't defined on all profiles) — retry once with no
+        // excludes rather than failing the whole request outright.
+        if (excludes.length) {
+          degraded = true;
+          routes = await fetchRoute(points, selectedMode, { excludes: [], alternatives: routeShowAlternatives });
+        } else {
+          throw err;
+        }
+      }
       if (thisToken !== routeFetchToken) return;
+
+      availableRoutes = routes;
+      selectedRouteIndex = 0;
+      const route = routes[0];
 
       drawRoute(route);
       routeTotalDistanceM = route.distance;
@@ -1498,14 +1592,67 @@
       routeSummary.classList.add('visible');
       navState = 'previewing';
       renderTripList();
+      renderAltRoutes();
+      if (degraded) showToast("One of your route preferences isn't supported for this travel mode here — showing the closest match.");
     } catch (err) {
       if (thisToken !== routeFetchToken) return;
+      availableRoutes = [];
+      renderAltRoutes();
       showRouteError("Couldn't calculate a route for this mode — try again or pick another destination.");
       routeSummary.classList.remove('visible');
     } finally {
       if (thisToken === routeFetchToken) startNavBtn.disabled = false;
     }
   }
+
+  // Renders the alternative-route picker (only shown when more than one
+  // route came back, which requires the "Alternatives" chip to be active).
+  function renderAltRoutes(){
+    if (availableRoutes.length < 2){
+      altRoutesList.classList.remove('visible');
+      altRoutesList.innerHTML = '';
+      return;
+    }
+    altRoutesList.innerHTML = availableRoutes.map((r, i) => `
+      <button class="alt-route-item${i === selectedRouteIndex ? ' active' : ''}" data-idx="${i}">
+        <span>
+          <div class="art-time">${formatDuration(r.duration || (r.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]))}</div>
+          <div class="art-label">${i === 0 ? 'Fastest' : 'Alternative ' + i}</div>
+        </span>
+        <span class="art-dist">${formatDistance(r.distance || 0)}</span>
+      </button>
+    `).join('');
+    altRoutesList.classList.add('visible');
+    altRoutesList.querySelectorAll('.alt-route-item').forEach(btn => {
+      btn.addEventListener('click', () => selectRoute(parseInt(btn.dataset.idx, 10)));
+    });
+  }
+
+  function selectRoute(idx){
+    const route = availableRoutes[idx];
+    if (!route) return;
+    selectedRouteIndex = idx;
+    drawRoute(route);
+    routeTotalDistanceM = route.distance;
+    routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
+    routeSteps = buildFlatSteps(route, waypoints.slice());
+    currentStepIndex = 0;
+    alertedStepIndexForTurn = null;
+    rsTime.textContent = formatDuration(routeTotalDurationS);
+    rsSub.textContent = `${formatDistance(routeTotalDistanceM)} · arrive ${formatClock(new Date(Date.now() + routeTotalDurationS * 1000))}`;
+    renderAltRoutes();
+  }
+
+  routeOptionsRow.querySelectorAll('.poi-chip[data-opt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const opt = btn.dataset.opt;
+      btn.classList.toggle('active');
+      const isActive = btn.classList.contains('active');
+      if (opt === 'alternatives') routeShowAlternatives = isActive;
+      else routeAvoid[opt] = isActive;
+      if (destination) computeRoute();
+    });
+  });
 
   function drawRoute(route){
     const latlngs = route.geometry.coordinates.map(c => [c[1], c[0]]);
@@ -1618,6 +1765,7 @@
     searchCard.classList.add('hidden-card');
     hudTurnPanel.classList.add('visible');
     hudMetricsBar.classList.add('visible');
+    document.body.classList.add('nav-active');
 
     setFollowState(true, true);
     requestWakeLock();
@@ -1631,6 +1779,7 @@
     hudMetricsBar.classList.remove('visible');
     recalcBanner.classList.remove('visible');
     searchCard.classList.remove('hidden-card');
+    document.body.classList.remove('nav-active');
     releaseWakeLock();
     setFollowState(false, false);
   }
