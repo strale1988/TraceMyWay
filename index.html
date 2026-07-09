@@ -894,7 +894,17 @@
   }
   const SOUNDS = {
     navStart: () => playChime([{ freq: 523.25, delay: 0, dur: 0.14 }, { freq: 783.99, delay: 0.12, dur: 0.22 }]),
+    // Early heads-up, well before the turn — a single soft, low tone that
+    // reads as "something's coming up" without demanding attention yet.
+    turnPrepare: () => playChime([{ freq: 440, delay: 0, dur: 0.16, vol: 0.11, type: 'sine' }]),
+    // Mid-distance reminder — the original cue, kept as-is.
     turnAlert: () => playChime([{ freq: 880, delay: 0, dur: 0.11 }]),
+    // Right at the maneuver — a sharper double-beep that's easy to
+    // distinguish from the other two even without looking at the screen.
+    turnNow: () => playChime([
+      { freq: 1046.5, delay: 0,    dur: 0.09, vol: 0.22, type: 'square' },
+      { freq: 1046.5, delay: 0.14, dur: 0.09, vol: 0.22, type: 'square' },
+    ]),
     waypoint: () => playChime([{ freq: 659.25, delay: 0, dur: 0.12 }, { freq: 987.77, delay: 0.1, dur: 0.2 }]),
     arrival: () => playChime([{ freq: 523.25, delay: 0, dur: 0.12 }, { freq: 659.25, delay: 0.1, dur: 0.12 }, { freq: 783.99, delay: 0.2, dur: 0.3 }]),
     recalc: () => playChime([{ freq: 392, delay: 0, dur: 0.12, type: 'triangle' }, { freq: 329.63, delay: 0.1, dur: 0.2, type: 'triangle' }]),
@@ -924,6 +934,7 @@
   let followMode = false;
   let headingUpMode = false;
   let mapBearing = 0; // continuous CSS bearing currently applied to rotWrapper
+  let compassDialBearing = 0; // continuous CSS bearing currently applied to the small compass dial
 
   const followBtn = document.getElementById('followBtn');
   const compassBtn = document.getElementById('compassBtn');
@@ -1065,7 +1076,14 @@
 
   function updateCompassWidget(){
     const heading = getCurrentHeading() || 0;
-    compassDial.style.transform = `rotate(${-heading}deg)`;
+    // Rotating straight to the raw 0-360 heading makes the CSS transition
+    // interpolate the literal degree values — so 359° -> 1° (a 2° nudge)
+    // gets animated as a 358° spin the "wrong" way round. Accumulating a
+    // continuous bearing via the shortest delta each tick keeps every visual
+    // step small and in the correct direction, same fix as applyMapBearing.
+    const delta = shortestAngleDelta(compassDialBearing % 360, heading);
+    compassDialBearing += delta;
+    compassDial.style.transform = `rotate(${-compassDialBearing}deg)`;
   }
 
   compassBtn.addEventListener('click', async () => {
@@ -1363,7 +1381,14 @@
   const AVG_SPEED_MPS_FALLBACK = { driving: 13.9, cycling: 4.5, walking: 1.35 };
   const ARRIVAL_THRESHOLD_M   = { driving: 30, cycling: 18, walking: 12 };
   const OFFROUTE_THRESHOLD_M  = { driving: 40, cycling: 30, walking: 20 };
-  const TURN_ALERT_DISTANCE_M = { driving: 150, cycling: 80, walking: 40 };
+  // Three-stage turn alert, mirroring how Google/Waze/Apple Maps layer cues:
+  // an early heads-up while there's still cruising distance to the turn, the
+  // original "it's coming up" cue, and a sharp final cue right as you reach
+  // it. Each stage fires once per step (see alertedStepIndexForPrepare/
+  // Turn/Imminent below).
+  const PREPARE_ALERT_DISTANCE_M  = { driving: 400, cycling: 200, walking: 80 };
+  const TURN_ALERT_DISTANCE_M     = { driving: 150, cycling: 80,  walking: 40 };
+  const IMMINENT_ALERT_DISTANCE_M = { driving: 50,  cycling: 30,  walking: 20 };
   const RECALC_COOLDOWN_MS = 15000;
 
   let selectedMode = 'driving';
@@ -1401,7 +1426,9 @@
   let excludeSupported = true;
   let excludeDegradedToastShown = false;
   let selectedRouteIndex = 0;
+  let alertedStepIndexForPrepare = null;
   let alertedStepIndexForTurn = null;
+  let alertedStepIndexForImminent = null;
 
   const searchCard   = document.getElementById('searchCard');
   const destInput     = document.getElementById('destInput');
@@ -1817,7 +1844,9 @@
       routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
       routeSteps = buildFlatSteps(route, waypoints.slice());
       currentStepIndex = 0;
+      alertedStepIndexForPrepare = null;
       alertedStepIndexForTurn = null;
+      alertedStepIndexForImminent = null;
 
       rsTime.textContent = formatDuration(routeTotalDurationS);
       rsSub.textContent = `${formatDistance(routeTotalDistanceM)} · arrive ${formatClock(new Date(Date.now() + routeTotalDurationS * 1000))}`;
@@ -1904,7 +1933,9 @@
     routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
     routeSteps = buildFlatSteps(route, waypoints.slice());
     currentStepIndex = 0;
+    alertedStepIndexForPrepare = null;
     alertedStepIndexForTurn = null;
+    alertedStepIndexForImminent = null;
     rsTime.textContent = formatDuration(routeTotalDurationS);
     rsSub.textContent = `${formatDistance(routeTotalDistanceM)} · arrive ${formatClock(new Date(Date.now() + routeTotalDurationS * 1000))}`;
     renderAltRoutes();
@@ -2026,7 +2057,9 @@
     navState = 'navigating';
     navArrived = false;
     currentStepIndex = 0;
+    alertedStepIndexForPrepare = null;
     alertedStepIndexForTurn = null;
+    alertedStepIndexForImminent = null;
     lastRecalcAt = Date.now();
 
     searchCard.classList.add('hidden-card');
@@ -2092,14 +2125,24 @@
       }
       if (nextStep.maneuver.type === 'arrive') onWaypointReached(nextStep);
       currentStepIndex++;
+      alertedStepIndexForPrepare = null;
       alertedStepIndexForTurn = null;
+      alertedStepIndexForImminent = null;
       nextStep = routeSteps[currentStepIndex + 1];
       distToManeuver = nextStep ? distMeters(pos, stepLatLng(nextStep)) : 0;
     }
 
+    if (nextStep && distToManeuver <= PREPARE_ALERT_DISTANCE_M[selectedMode] && alertedStepIndexForPrepare !== currentStepIndex){
+      alertedStepIndexForPrepare = currentStepIndex;
+      SOUNDS.turnPrepare();
+    }
     if (nextStep && distToManeuver <= TURN_ALERT_DISTANCE_M[selectedMode] && alertedStepIndexForTurn !== currentStepIndex){
       alertedStepIndexForTurn = currentStepIndex;
       SOUNDS.turnAlert();
+    }
+    if (nextStep && distToManeuver <= IMMINENT_ALERT_DISTANCE_M[selectedMode] && alertedStepIndexForImminent !== currentStepIndex){
+      alertedStepIndexForImminent = currentStepIndex;
+      SOUNDS.turnNow();
     }
 
     refreshTurnPanel(pos, nextStep, distToManeuver);
@@ -2117,7 +2160,9 @@
       routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
       routeSteps = buildFlatSteps(route, waypoints.slice());
       currentStepIndex = 0;
+      alertedStepIndexForPrepare = null;
       alertedStepIndexForTurn = null;
+      alertedStepIndexForImminent = null;
     } catch (_) {
       showToast('Recalculation failed — keep going, retrying shortly.');
     } finally {
