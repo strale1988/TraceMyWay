@@ -211,7 +211,11 @@
   .leaflet-rotate-wrapper{
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
-    transition: transform .18s linear;
+    /* No CSS transition here on purpose — bearing is now eased continuously
+       every animation frame in JS (see the render loop below). Layering a
+       CSS transition on top of an already-smoothed, already-continuous
+       value just adds a second, competing smoothing pass and makes
+       rotation feel laggy/rubbery instead of crisp. */
     transform-origin: center center;
   }
 
@@ -277,7 +281,8 @@
   .compass-btn{ position: relative; overflow: hidden; }
   .compass-dial{
     position: absolute; inset: 0;
-    transition: transform .1s linear;
+    /* No CSS transition — eased every animation frame in JS, same reasoning
+       as .leaflet-rotate-wrapper above. */
   }
   .compass-dial svg{ width: 100%; height: 100%; }
 
@@ -400,6 +405,25 @@
   }
   .mode-pill.active{ background: var(--hiviz); color: var(--asphalt); }
   .mode-pill svg{ width: 16px; height: 16px; }
+
+  /* Small "current travel mode" indicator + shortcut into Settings, shown
+     inline with the search field now that Drive/Cycle/Walk itself lives in
+     the settings sheet instead of taking a full row here. */
+  #modeIndicatorBtn{
+    flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px;
+    display:flex; align-items:center; justify-content:center;
+    background: var(--panel-hi); border:1px solid var(--line); color: var(--hiviz);
+  }
+  #modeIndicatorBtn svg{ width:18px; height:18px; }
+
+  /* Compact search card — once a destination/route exists, the search
+     input, suggestions, and POI chip row fold away so the route + map
+     underneath aren't covered. Trip list, alt-routes and the route summary
+     (with Start Navigation) stay visible. */
+  #searchCard.compact .search-input-row,
+  #searchCard.compact #suggestionsList,
+  #searchCard.compact .poi-chip-row{ display: none; }
+  #searchCard.compact #tripList{ margin-top: 0; }
 
   .poi-chip-row{ display:flex; gap:6px; margin-top:10px; overflow-x:auto; padding-bottom:2px; }
   .poi-chip-row::-webkit-scrollbar{ display:none; }
@@ -555,24 +579,12 @@
       <button id="clearDestBtn" title="Clear">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
       </button>
+      <button id="modeIndicatorBtn" title="Travel mode — open in Settings">
+        <svg id="modeIndicatorIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/></svg>
+      </button>
     </div>
 
     <div id="suggestionsList"></div>
-
-    <div class="mode-pills" id="modePills">
-      <button class="mode-pill active" data-mode="driving" title="Driving">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/></svg>
-        <span>Drive</span>
-      </button>
-      <button class="mode-pill" data-mode="cycling" title="Cycling">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2 1 1 0 000 2zM12 17.5V14l-3-3 4-3 2 3h3"/></svg>
-        <span>Cycle</span>
-      </button>
-      <button class="mode-pill" data-mode="walking" title="Walking">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="1.6"/><path d="M10 22l1.5-6L9 14l1-5 3-2 3 2 2 2M11.5 16l3 1 2 5"/></svg>
-        <span>Walk</span>
-      </button>
-    </div>
 
     <div class="poi-chip-row" id="poiChipRow"></div>
 
@@ -664,7 +676,22 @@
   <div id="settingsOverlay">
     <div class="sheet glass">
       <div class="sheet-handle"></div>
-      <div class="settings-row-title">Theme</div>
+      <div class="settings-row-title">Travel mode</div>
+      <div class="mode-pills" id="modePills">
+        <button class="mode-pill active" data-mode="driving" title="Driving">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/></svg>
+          <span>Drive</span>
+        </button>
+        <button class="mode-pill" data-mode="cycling" title="Cycling">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2 1 1 0 000 2zM12 17.5V14l-3-3 4-3 2 3h3"/></svg>
+          <span>Cycle</span>
+        </button>
+        <button class="mode-pill" data-mode="walking" title="Walking">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="1.6"/><path d="M10 22l1.5-6L9 14l1-5 3-2 3 2 2 2M11.5 16l3 1 2 5"/></svg>
+          <span>Walk</span>
+        </button>
+      </div>
+      <div class="settings-row-title" style="margin-top:18px;">Theme</div>
       <div class="mode-pills" id="themePills">
         <button class="mode-pill" data-theme-choice="light">Light</button>
         <button class="mode-pill" data-theme-choice="dark">Dark</button>
@@ -930,16 +957,6 @@
   let accuracyCircle = null;
   let watchId = null;
 
-  // --- Follow / heading-up state ------------------------------------------
-  let followMode = false;
-  let headingUpMode = false;
-  let mapBearing = 0; // continuous CSS bearing currently applied to rotWrapper
-  let compassDialBearing = 0; // continuous CSS bearing currently applied to the small compass dial
-
-  const followBtn = document.getElementById('followBtn');
-  const compassBtn = document.getElementById('compassBtn');
-  const compassDial = document.getElementById('compassDial');
-
   function shortestAngleDelta(fromDeg, toDeg){
     let d = (toDeg - fromDeg) % 360;
     if (d > 180) d -= 360;
@@ -947,13 +964,104 @@
     return d;
   }
 
-  function applyMapBearing(targetDeg){
-    const delta = shortestAngleDelta(mapBearing % 360, targetDeg);
-    mapBearing += delta;
-    if (rotWrapper) rotWrapper.style.transform = `rotate(${-mapBearing}deg)`;
-    const arrow = document.getElementById('puckArrow');
-    if (arrow) arrow.style.transform = `rotate(${headingUpMode ? mapBearing : (getCurrentHeading() || 0)}deg)`;
+  // ---------------------------------------------------------------
+  // RENDER LOOP — the browser's Geolocation API only hands us a new fix
+  // roughly once a second (sometimes less often indoors/in a tunnel), and
+  // the old code moved the puck / panned the map / rotated the bearing
+  // directly inside that once-a-second callback. That's what made things
+  // feel like they "jump" on every GPS update instead of gliding.
+  //
+  // This loop runs every animation frame (~60fps) and eases the puck
+  // position, the map pan, and the bearing/compass rotation continuously
+  // toward their latest targets — completely decoupled from how often a
+  // real GPS fix actually arrives. Between fixes it also dead-reckons
+  // (projects the puck forward using the last known speed + heading) so
+  // motion keeps looking continuous instead of pausing and catching up.
+  // ---------------------------------------------------------------
+  const POSITION_EASE_TAU_S   = 0.45; // time constant for puck/camera position easing
+  const HEADING_EASE_TAU_S    = 0.35; // time constant for the "real world heading" tracker
+  const MAP_ROTATION_EASE_TAU_S = 0.30; // time constant for the map's own rotation (heading-up toggle)
+  const DEAD_RECKON_MAX_MS    = 2500; // stop extrapolating forward if a fix is older than this
+
+  let gpsTargetLatLng = null;   // [lat, lon] latest smoothed/snapped GPS fix
+  let gpsTargetAt = 0;          // Date.now() the target above was set
+  let gpsTargetSpeedMps = 0;    // for dead-reckoning projection between fixes
+  let gpsTargetHeadingDeg = null; // for dead-reckoning projection between fixes
+
+  let displayedLatLng = null;   // [lat, lon] actually rendered this frame
+  let headingBearing = 0;       // continuous real-world-heading tracker (compass + puck arrow)
+  let mapRotation = 0;          // continuous bearing actually applied to the map wrapper
+
+  let renderLoopLastTs = null;
+
+  // Projects a lat/lng forward along a heading by a distance in meters —
+  // just enough geodesy for a few seconds of dead reckoning, not a
+  // replacement for a real GPS fix.
+  function projectLatLng(latlng, headingDeg, distM){
+    const R = 6371000;
+    const bearing = headingDeg * Math.PI / 180;
+    const lat1 = latlng[0] * Math.PI / 180;
+    const lon1 = latlng[1] * Math.PI / 180;
+    const dR = distM / R;
+    const lat2 = Math.asin(Math.sin(lat1) * Math.cos(dR) + Math.cos(lat1) * Math.sin(dR) * Math.cos(bearing));
+    const lon2 = lon1 + Math.atan2(Math.sin(bearing) * Math.sin(dR) * Math.cos(lat1), Math.cos(dR) - Math.sin(lat1) * Math.sin(lat2));
+    return [lat2 * 180 / Math.PI, lon2 * 180 / Math.PI];
   }
+
+  function renderTick(ts){
+    requestAnimationFrame(renderTick);
+    if (renderLoopLastTs === null){ renderLoopLastTs = ts; return; }
+    const dt = Math.min((ts - renderLoopLastTs) / 1000, 0.25); // clamp huge gaps (tab backgrounded, etc.)
+    renderLoopLastTs = ts;
+
+    // --- Position: dead-reckon from the last fix, then ease toward it ---
+    if (gpsTargetLatLng){
+      const sinceFixMs = Date.now() - gpsTargetAt;
+      let projected = gpsTargetLatLng;
+      if (sinceFixMs > 0 && sinceFixMs < DEAD_RECKON_MAX_MS && gpsTargetSpeedMps > 0.3 && gpsTargetHeadingDeg !== null){
+        projected = projectLatLng(gpsTargetLatLng, gpsTargetHeadingDeg, gpsTargetSpeedMps * (sinceFixMs / 1000));
+      }
+      if (!displayedLatLng){
+        displayedLatLng = projected;
+      } else {
+        const posFactor = 1 - Math.exp(-dt / POSITION_EASE_TAU_S);
+        displayedLatLng = [
+          displayedLatLng[0] + (projected[0] - displayedLatLng[0]) * posFactor,
+          displayedLatLng[1] + (projected[1] - displayedLatLng[1]) * posFactor,
+        ];
+      }
+      if (userMarker) userMarker.setLatLng(displayedLatLng);
+      if (accuracyCircle) accuracyCircle.setLatLng(displayedLatLng);
+      if (followMode) map.setView(displayedLatLng, map.getZoom(), { animate: false });
+    }
+
+    // --- Bearing: ease the real-world heading tracker, then ease the
+    //     map's own rotation toward it only while heading-up is active ---
+    const targetHeading = getCurrentHeading();
+    if (targetHeading !== null){
+      const hFactor = 1 - Math.exp(-dt / HEADING_EASE_TAU_S);
+      headingBearing += shortestAngleDelta(headingBearing % 360, targetHeading) * hFactor;
+    }
+    const rotationTarget = (followMode && headingUpMode) ? headingBearing : 0;
+    const rFactor = 1 - Math.exp(-dt / MAP_ROTATION_EASE_TAU_S);
+    mapRotation += shortestAngleDelta(mapRotation % 360, rotationTarget) * rFactor;
+    if (rotWrapper) rotWrapper.style.transform = `rotate(${-mapRotation}deg)`;
+    if (compassDial) compassDial.style.transform = `rotate(${-headingBearing}deg)`;
+    const arrow = document.getElementById('puckArrow');
+    if (arrow){
+      const desiredAbsolute = (followMode && headingUpMode) ? 0 : headingBearing;
+      arrow.style.transform = `rotate(${desiredAbsolute + mapRotation}deg)`;
+    }
+  }
+  requestAnimationFrame(renderTick);
+
+  // --- Follow / heading-up state ------------------------------------------
+  let followMode = false;
+  let headingUpMode = false;
+
+  const followBtn = document.getElementById('followBtn');
+  const compassBtn = document.getElementById('compassBtn');
+  const compassDial = document.getElementById('compassDial');
 
   function setFollowState(nextFollow, nextHeadingUp){
     followMode = nextFollow;
@@ -963,11 +1071,13 @@
     if (followMode){
       map.dragging.disable();
       if (lastGoodLatLng) map.setView(lastGoodLatLng, Math.max(map.getZoom(), 17));
-      if (!headingUpMode) applyMapBearing(0);
+      didInitialAutoCenter = true; // the person took over centering — don't override it
     } else {
       map.dragging.enable();
-      applyMapBearing(0);
     }
+    // mapRotation/headingBearing above ease toward their new target
+    // (0 for north-up, live heading for heading-up) on their own each
+    // frame — no need to snap them here.
   }
 
   followBtn.addEventListener('click', () => {
@@ -1025,7 +1135,9 @@
   // is exactly what produces a *fixed* 90°-off compass — the map looks
   // rotated a quarter turn no matter which way the phone is actually facing.
   // screen.orientation.angle (falling back to the older window.orientation)
-  // tells us that offset so we can cancel it out.
+  // tells us that offset so we can cancel it out. Note: iOS's
+  // webkitCompassHeading already accounts for this itself, so the
+  // correction below only applies to the alpha-based (mainly Android) path.
   function getScreenAngle(){
     if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
     if (typeof window.orientation === 'number') return window.orientation;
@@ -1051,11 +1163,8 @@
     heading = ((heading % 360) + 360) % 360;
     deviceHeading = heading;
     lastDeviceHeadingAt = now;
-    updateCompassWidget();
-    if (followMode && headingUpMode){
-      const heading = getCurrentHeading();
-      if (heading !== null) applyMapBearing(heading);
-    }
+    // No direct DOM/bearing writes here — the render loop above reads
+    // getCurrentHeading() every frame and eases toward it on its own.
   }
 
   function attachOrientationListener(){
@@ -1074,18 +1183,6 @@
   }
   initCompass();
 
-  function updateCompassWidget(){
-    const heading = getCurrentHeading() || 0;
-    // Rotating straight to the raw 0-360 heading makes the CSS transition
-    // interpolate the literal degree values — so 359° -> 1° (a 2° nudge)
-    // gets animated as a 358° spin the "wrong" way round. Accumulating a
-    // continuous bearing via the shortest delta each tick keeps every visual
-    // step small and in the correct direction, same fix as applyMapBearing.
-    const delta = shortestAngleDelta(compassDialBearing % 360, heading);
-    compassDialBearing += delta;
-    compassDial.style.transform = `rotate(${-compassDialBearing}deg)`;
-  }
-
   compassBtn.addEventListener('click', async () => {
     if (!compassPermissionRequested && typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
       compassPermissionRequested = true;
@@ -1101,7 +1198,10 @@
   });
 
   // ---------------------------------------------------------------
-  // GPS SMOOTHING — distance-adaptive position blend + EMA heading
+  // GPS SMOOTHING — distance-adaptive position blend + EMA heading. This
+  // still runs on every raw GPS callback and produces the "target" fix;
+  // the render loop above is what turns that ~1Hz stream of targets into
+  // smooth continuous motion on screen.
   // ---------------------------------------------------------------
   let smoothedFixCoords = null;
   let smoothedHeading = null;
@@ -1147,6 +1247,14 @@
 
   let lastAcceptedFix = null; // {lat, lon, t}
 
+  // --- Initial auto-center: once the very first GPS fix comes in, zoom
+  //     the map in on the person's real location after a short beat (so it
+  //     doesn't feel like a jarring snap the instant the page loads) —
+  //     unless they've already searched a destination or taken control of
+  //     the map (dragged it or hit follow) in the meantime. ---------------
+  let didInitialAutoCenter = false;
+  map.on('dragstart', () => { didInitialAutoCenter = true; });
+
   function startLocationWatch(){
     if (window.isSecureContext === false){
       showToast('Location needs a secure connection — open this app over HTTPS (or localhost), not a plain http:// or file:// address.', true);
@@ -1184,10 +1292,11 @@
 
     const smoothed = smoothPositionFix(raw);
     let latlng = [smoothed.lat, smoothed.lon];
+    const isFirstFix = !lastGoodLatLng;
     lastGoodLatLng = latlng;
 
-    const rawKmh = (typeof pos.coords.speed === 'number' && !isNaN(pos.coords.speed) && pos.coords.speed >= 0)
-      ? pos.coords.speed * 3.6 : 0;
+    const rawSpeedMps = (typeof pos.coords.speed === 'number' && !isNaN(pos.coords.speed) && pos.coords.speed >= 0) ? pos.coords.speed : 0;
+    const rawKmh = rawSpeedMps * 3.6;
     const displaySpeed = rawKmh < 1.5 ? 0 : rawKmh;
     smoothedSpeedKmh = smoothedSpeedKmh + (displaySpeed - smoothedSpeedKmh) * SPEED_SMOOTHING_FACTOR;
     const speedPill = document.getElementById('speedPill');
@@ -1203,7 +1312,6 @@
       smoothedHeading = smoothHeadingFn(smoothedHeading, pos.coords.heading, HEADING_SMOOTHING_FACTOR);
       lastGpsHeadingAt = now;
     }
-    updateCompassWidget();
 
     let displayLatLng = latlng;
     if (navState === 'navigating' && routeLatLngs && routeLatLngs.length > 1){
@@ -1211,29 +1319,29 @@
       if (snap) displayLatLng = [snap.lat, snap.lon];
     }
 
+    // Feed the render loop's targets — it takes care of actually moving
+    // the puck/camera/bearing smoothly from here.
+    gpsTargetLatLng = displayLatLng;
+    gpsTargetAt = now;
+    gpsTargetSpeedMps = rawSpeedMps;
+    gpsTargetHeadingDeg = smoothedHeading;
+
     if (!userMarker){
       userMarker = L.marker(displayLatLng, { icon: blueDotIcon, zIndexOffset: 1000 }).addTo(map);
-    } else {
-      userMarker.setLatLng(displayLatLng);
     }
-
     if (!accuracyCircle){
       accuracyCircle = L.circle(latlng, { radius: accuracy, color: '#4285F4', weight: 1, fillColor: '#4285F4', fillOpacity: 0.08 }).addTo(map);
     } else {
-      accuracyCircle.setLatLng(latlng);
       accuracyCircle.setRadius(accuracy);
     }
 
-    if (followMode){
-      map.panTo(displayLatLng, { animate: true, duration: 0.3 });
-      if (headingUpMode){
-        const heading = getCurrentHeading();
-        if (heading !== null) applyMapBearing(heading);
-      }
-    }
-    if (!followMode || !headingUpMode){
-      const arrow = document.getElementById('puckArrow');
-      if (arrow) arrow.style.transform = `rotate(${getCurrentHeading() || 0}deg)`;
+    if (isFirstFix && !destination){
+      setTimeout(() => {
+        if (!didInitialAutoCenter && !destination && lastGoodLatLng){
+          didInitialAutoCenter = true;
+          map.flyTo(lastGoodLatLng, 16, { duration: 1.4 });
+        }
+      }, 1800);
     }
 
     maybeFetchSpeedLimit(latlng[0], latlng[1]);
@@ -1254,6 +1362,7 @@
   }
 
   startLocationWatch();
+
 
   // ---------------------------------------------------------------
   // WAKE LOCK — keep the screen on for the whole session
@@ -1484,10 +1593,18 @@
   // ---------------------------------------------------------------
   // TRIP MANAGEMENT — destination + ordered waypoints
   // ---------------------------------------------------------------
+  // Folds the search input / suggestions / POI chip row away as soon as a
+  // destination exists, so the route drawn on the map isn't sitting behind
+  // the search UI. Trip list + route summary + Start Navigation stay put.
+  function updateSearchCardCompactState(){
+    searchCard.classList.toggle('compact', !!destination);
+  }
+
   function setDestinationFromSelection(lat, lon, label){
     destination = { lat, lon, label };
     if (destMarker) map.removeLayer(destMarker);
     destMarker = L.marker([lat, lon], { icon: destPinIcon }).addTo(map);
+    updateSearchCardCompactState();
     computeRoute();
   }
 
@@ -1524,6 +1641,7 @@
     renderAltRoutes();
     routeSummary.classList.remove('visible');
     hideRouteError();
+    updateSearchCardCompactState();
     renderTripList();
   }
 
@@ -1638,12 +1756,33 @@
   });
 
   // ---------------------------------------------------------------
-  // MODE SELECTOR
+  // MODE SELECTOR (lives in the Settings sheet now — see #modePills there).
+  // The search card just keeps a small read-only icon (#modeIndicatorBtn)
+  // showing whichever mode is active, tapping it jumps straight into
+  // Settings to change it.
   // ---------------------------------------------------------------
+  const MODE_ICON_PATHS = {
+    driving: '<path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/>',
+    cycling: '<circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2 1 1 0 000 2zM12 17.5V14l-3-3 4-3 2 3h3"/>',
+    walking: '<circle cx="13" cy="4" r="1.6"/><path d="M10 22l1.5-6L9 14l1-5 3-2 3 2 2 2M11.5 16l3 1 2 5"/>',
+  };
+  const modeIndicatorBtn  = document.getElementById('modeIndicatorBtn');
+  const modeIndicatorIcon = document.getElementById('modeIndicatorIcon');
+  function updateModeIndicatorIcon(){
+    modeIndicatorIcon.innerHTML = MODE_ICON_PATHS[selectedMode] || MODE_ICON_PATHS.driving;
+  }
+  updateModeIndicatorIcon();
+  modeIndicatorBtn.addEventListener('click', () => {
+    settingsOverlay.classList.add('visible');
+    updateThemePillsUI();
+    updateSoundBtnUI();
+  });
+
   modePills.forEach(btn => {
     btn.addEventListener('click', () => {
       selectedMode = btn.dataset.mode;
       modePills.forEach(b => b.classList.toggle('active', b === btn));
+      updateModeIndicatorIcon();
       if (destination) computeRoute();
     });
   });
