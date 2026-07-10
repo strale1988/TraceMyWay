@@ -78,17 +78,7 @@
     -webkit-tap-highlight-color: transparent;
     transition: background .2s ease, color .2s ease;
   }
-  .font-display{ font-family: 'Rajdhani', 'Inter', sans-serif; letter-spacing: 0.01em; }
-
   #map{ position:absolute; inset:0; z-index:0; background:var(--asphalt); }
-
-  .hiviz-stripe{
-    background: repeating-linear-gradient(
-      -45deg,
-      var(--hiviz) 0px, var(--hiviz) 10px,
-      var(--asphalt) 10px, var(--asphalt) 20px
-    );
-  }
 
   .glass{
     background: rgba(18, 27, 46, 0.88);
@@ -113,18 +103,12 @@
     background: rgba(255, 255, 255, 0.68);
   }
 
-  .input-field, .search-input-row{
+  .search-input-row{
     background: var(--panel-hi);
     border: 1px solid var(--line);
     color: var(--fog);
     transition: border-color .15s ease, box-shadow .15s ease;
   }
-  .input-field:focus{
-    outline: none;
-    border-color: var(--hiviz);
-    box-shadow: 0 0 0 3px rgba(36,99,214,0.15);
-  }
-  .input-field::placeholder{ color: var(--steel); }
 
   .btn-primary{
     background: var(--hiviz);
@@ -314,8 +298,6 @@
     gap: 4px;
   }
   #speedPill.visible{ display: flex; }
-  #speedPill .speed-value{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:22px; line-height:1; color: var(--fog); }
-  #speedPill .speed-unit{ font-size:10px; color: var(--steel); text-transform:uppercase; }
 
   /* Speed-limit pill — same shape/sizing as #speedPill for visual consistency,
      just marked out with a red border so it reads as the limit rather than
@@ -331,8 +313,10 @@
     gap: 4px;
   }
   #speedLimitSign.visible{ display: flex; }
-  #speedLimitSign .speed-value{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:22px; line-height:1; color: var(--fog); }
-  #speedLimitSign .speed-unit{ font-size:10px; color: var(--steel); text-transform:uppercase; }
+
+  /* Shared value/unit styling for both the speed pill and speed-limit sign */
+  #speedPill .speed-value, #speedLimitSign .speed-value{ font-family:'Rajdhani',sans-serif; font-weight:700; font-size:22px; line-height:1; color: var(--fog); }
+  #speedPill .speed-unit, #speedLimitSign .speed-unit{ font-size:10px; color: var(--steel); text-transform:uppercase; }
 
   #searchCard{
     position: fixed;
@@ -364,14 +348,6 @@
     min-height: 0; /* required for flex children to actually shrink/scroll */
   }
   #searchCardScroll::-webkit-scrollbar{ width: 0; height: 0; }
-
-  /* Collapsed state — set right after a manually-dropped pin so the map
-     underneath is more visible. Route info + Start Navigation stay put;
-     tapping back into the search field (or clearing the trip) expands
-     everything again. */
-  #searchCard.collapsed #searchCardScroll .poi-chip-row,
-  #searchCard.collapsed #searchCardScroll #suggestionsList,
-  #searchCard.collapsed #searchCardScroll #tripList{ display: none; }
 
   .search-input-row{
     display: flex;
@@ -599,8 +575,6 @@
   }
   #settingsSheetScroll::-webkit-scrollbar{ width: 0; height: 0; }
   .settings-row-title{ font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color: var(--steel); margin-bottom:8px; }
-
-  .fade-out{ opacity: 0; pointer-events: none; }
 
   /* ---- Small / narrow phones (portrait) ---- */
   @media (max-width: 380px){
@@ -1154,6 +1128,10 @@
     }
   }
 
+  // Key used to mark the one-time low-zoom world-overview tile cache as
+  // done (per device) — this cleanup is the only remaining reference to it.
+  const WORLD_OVERVIEW_DONE_KEY = 'tmw_world_overview_cached_v1';
+
   async function clearOfflineMapData(){
     try {
       await caches.delete(TILE_CACHE_NAME);
@@ -1256,23 +1234,6 @@
     } catch (_) { /* best-effort background task — quietly skip on failure */ }
   }
 
-  // ---- One-time low-zoom world overview ----
-  // A small number of very-coarse tiles (zoom 0–5, ~1,400 worldwide) so
-  // panning or zooming way out doesn't show blank gray — not remotely
-  // enough detail to navigate by, just keeps the map visually continuous.
-  // Runs once ever (per device), same network gating as auto-cache above.
-  const WORLD_OVERVIEW_DONE_KEY = 'tmw_world_overview_cached_v1';
-  async function cacheWorldOverviewOnce(){
-    if (localStorage.getItem(WORLD_OVERVIEW_DONE_KEY)) return;
-    if (!canAutoCacheNow()) return;
-    try {
-      const worldBounds = L.latLngBounds([-85, -180], [85, 180]);
-      const urls = tileUrlsForBounds(worldBounds, 2, 3, 0, 5); // zoom 0–5
-      await cacheTileUrls(urls, null);
-      localStorage.setItem(WORLD_OVERVIEW_DONE_KEY, '1');
-      updateOfflineStorageEstimate();
-    } catch (_) { /* best-effort — try again next launch */ }
-  }
   // =================================================================
   // OFFLINE ROUTING ENGINE
   // OSRM is a server — there's no way to run it in-browser — so offline
@@ -1701,6 +1662,12 @@
   let userMarker = null;
   let accuracyCircle = null;
   let watchId = null;
+  // The puck's arrow/wrap elements live inside userMarker's divIcon HTML, so
+  // they don't exist in the DOM until the marker is first created (see
+  // onPositionUpdate). Cached once at that point so the 60fps render loop
+  // and per-fix position updates below don't re-query the DOM every time.
+  let puckArrowEl = null;
+  let puckWrapEl = null;
 
   function shortestAngleDelta(fromDeg, toDeg){
     let d = (toDeg - fromDeg) % 360;
@@ -1792,10 +1759,9 @@
     mapRotation += shortestAngleDelta(mapRotation % 360, rotationTarget) * rFactor;
     if (rotWrapper) rotWrapper.style.transform = `rotate(${-mapRotation}deg)`;
     if (compassDial) compassDial.style.transform = `rotate(${-headingBearing}deg)`;
-    const arrow = document.getElementById('puckArrow');
-    if (arrow){
+    if (puckArrowEl){
       const desiredAbsolute = (followMode && headingUpMode) ? 0 : headingBearing;
-      arrow.style.transform = `rotate(${desiredAbsolute + mapRotation}deg)`;
+      puckArrowEl.style.transform = `rotate(${desiredAbsolute + mapRotation}deg)`;
     }
   }
   requestAnimationFrame(renderTick);
@@ -2025,10 +1991,6 @@
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
     );
   }
-  function stopLocationWatch(){
-    if (watchId !== null){ navigator.geolocation.clearWatch(watchId); watchId = null; }
-  }
-
   function onPositionUpdate(pos){
     hideToast();
     const raw = { lat: pos.coords.latitude, lon: pos.coords.longitude };
@@ -2053,13 +2015,11 @@
     const rawKmh = rawSpeedMps * 3.6;
     const displaySpeed = rawKmh < 1.5 ? 0 : rawKmh;
     smoothedSpeedKmh = smoothedSpeedKmh + (displaySpeed - smoothedSpeedKmh) * SPEED_SMOOTHING_FACTOR;
-    const speedPill = document.getElementById('speedPill');
-    speedPill.classList.add('visible');
-    document.getElementById('speedValue').textContent = Math.round(smoothedSpeedKmh);
+    speedPillEl.classList.add('visible');
+    speedValueEl.textContent = Math.round(smoothedSpeedKmh);
 
     const isMoving = smoothedSpeedKmh >= 2.2;
-    const puckWrap = document.getElementById('puckWrap');
-    if (puckWrap) puckWrap.classList.toggle('is-moving', isMoving);
+    if (puckWrapEl) puckWrapEl.classList.toggle('is-moving', isMoving);
 
     if (typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading) &&
         typeof pos.coords.speed === 'number' && pos.coords.speed >= GPS_HEADING_MIN_SPEED_MPS){
@@ -2082,6 +2042,8 @@
 
     if (!userMarker){
       userMarker = L.marker(displayLatLng, { icon: blueDotIcon, zIndexOffset: 1000 }).addTo(map);
+      puckArrowEl = document.getElementById('puckArrow');
+      puckWrapEl = document.getElementById('puckWrap');
     }
     if (!accuracyCircle){
       accuracyCircle = L.circle(latlng, { radius: accuracy, color: '#4285F4', weight: 1, fillColor: '#4285F4', fillOpacity: 0.08 }).addTo(map);
@@ -2136,9 +2098,6 @@
       wakeLock = await navigator.wakeLock.request('screen');
       wakeLock.addEventListener('release', () => { wakeLock = null; });
     } catch (_) { /* denied (e.g. low battery mode, or needs a user gesture first) — non-fatal */ }
-  }
-  function releaseWakeLock(){
-    if (wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
   }
   requestWakeLock();
   document.addEventListener('visibilitychange', () => {
@@ -2228,12 +2187,12 @@
     } catch (_) { /* silent — rate-limited or briefly unavailable; keep last known value on screen */ }
   }
   function showSpeedLimitSign(){
-    document.getElementById('speedLimitValue').textContent = speedLimitValue;
-    document.getElementById('speedLimitUnit').textContent = speedLimitUnit;
-    document.getElementById('speedLimitSign').classList.add('visible');
+    speedLimitValueEl.textContent = speedLimitValue;
+    speedLimitUnitEl.textContent = speedLimitUnit;
+    speedLimitSignEl.classList.add('visible');
   }
   function hideSpeedLimitSign(){
-    document.getElementById('speedLimitSign').classList.remove('visible');
+    speedLimitSignEl.classList.remove('visible');
   }
 
   // =================================================================
@@ -2320,6 +2279,16 @@
   const maneuverIconWrap = document.getElementById('maneuverIconWrap');
   const routeOptionsRow = document.getElementById('routeOptionsRow');
   const altRoutesList   = document.getElementById('altRoutesList');
+  const turnInstructionEl = document.getElementById('turnInstruction');
+  const turnDistanceEl    = document.getElementById('turnDistance');
+  const metricTimeEl      = document.getElementById('metricTime');
+  const metricDistanceEl  = document.getElementById('metricDistance');
+  const metricEtaEl       = document.getElementById('metricEta');
+  const speedPillEl       = document.getElementById('speedPill');
+  const speedValueEl      = document.getElementById('speedValue');
+  const speedLimitSignEl  = document.getElementById('speedLimitSign');
+  const speedLimitValueEl = document.getElementById('speedLimitValue');
+  const speedLimitUnitEl  = document.getElementById('speedLimitUnit');
 
   const destPinIcon = L.divIcon({
     className: 'dest-pin',
@@ -3338,12 +3307,12 @@
   function refreshTurnPanel(pos, nextStepArg, distArg){
     const nextStep = nextStepArg !== undefined ? nextStepArg : (routeSteps ? routeSteps[currentStepIndex + 1] : null);
     maneuverIconWrap.innerHTML = maneuverIconHtml(nextStep);
-    document.getElementById('turnInstruction').textContent = instructionForStep(nextStep);
+    turnInstructionEl.textContent = instructionForStep(nextStep);
     if (pos && nextStep){
       const dist = distArg !== undefined ? distArg : distMeters(pos, stepLatLng(nextStep));
-      document.getElementById('turnDistance').textContent = dist < 30 ? 'Now' : `In ${formatDistance(dist)}`;
+      turnDistanceEl.textContent = dist < 30 ? 'Now' : `In ${formatDistance(dist)}`;
     } else {
-      document.getElementById('turnDistance').textContent = nextStep ? formatDistance(nextStep.distance || 0) : '—';
+      turnDistanceEl.textContent = nextStep ? formatDistance(nextStep.distance || 0) : '—';
     }
   }
 
@@ -3357,18 +3326,18 @@
     const overallPaceSPerM = routeTotalDistanceM > 0 ? routeTotalDurationS / routeTotalDistanceM : (1 / AVG_SPEED_MPS_FALLBACK[selectedMode]);
     const remainingSeconds = remainingDistance * overallPaceSPerM;
 
-    document.getElementById('metricTime').textContent = formatDuration(remainingSeconds);
-    document.getElementById('metricDistance').textContent = formatDistance(remainingDistance);
-    document.getElementById('metricEta').textContent = formatClock(new Date(Date.now() + remainingSeconds * 1000));
+    metricTimeEl.textContent = formatDuration(remainingSeconds);
+    metricDistanceEl.textContent = formatDistance(remainingDistance);
+    metricEtaEl.textContent = formatClock(new Date(Date.now() + remainingSeconds * 1000));
   }
 
   function showArrivedState(){
     maneuverIconWrap.innerHTML = ICONS.arrive;
-    document.getElementById('turnInstruction').textContent = 'You have arrived';
-    document.getElementById('turnDistance').textContent = 'Destination';
-    document.getElementById('metricTime').textContent = '0 min';
-    document.getElementById('metricDistance').textContent = '0 m';
-    document.getElementById('metricEta').textContent = formatClock(new Date());
+    turnInstructionEl.textContent = 'You have arrived';
+    turnDistanceEl.textContent = 'Destination';
+    metricTimeEl.textContent = '0 min';
+    metricDistanceEl.textContent = '0 m';
+    metricEtaEl.textContent = formatClock(new Date());
     SOUNDS.arrival();
     showToast('You have arrived at your destination.', true);
   }
