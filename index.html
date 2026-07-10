@@ -416,15 +416,6 @@
   }
   #modeIndicatorBtn svg{ width:18px; height:18px; }
 
-  /* Compact search card — once a destination/route exists, the search
-     input, suggestions, and POI chip row fold away so the route + map
-     underneath aren't covered. Trip list, alt-routes and the route summary
-     (with Start Navigation) stay visible. */
-  #searchCard.compact .search-input-row,
-  #searchCard.compact #suggestionsList,
-  #searchCard.compact .poi-chip-row{ display: none; }
-  #searchCard.compact #tripList{ margin-top: 0; }
-
   .poi-chip-row{ display:flex; gap:6px; margin-top:10px; overflow-x:auto; padding-bottom:2px; }
   .poi-chip-row::-webkit-scrollbar{ display:none; }
   .poi-chip{
@@ -1593,18 +1584,10 @@
   // ---------------------------------------------------------------
   // TRIP MANAGEMENT — destination + ordered waypoints
   // ---------------------------------------------------------------
-  // Folds the search input / suggestions / POI chip row away as soon as a
-  // destination exists, so the route drawn on the map isn't sitting behind
-  // the search UI. Trip list + route summary + Start Navigation stay put.
-  function updateSearchCardCompactState(){
-    searchCard.classList.toggle('compact', !!destination);
-  }
-
   function setDestinationFromSelection(lat, lon, label){
     destination = { lat, lon, label };
     if (destMarker) map.removeLayer(destMarker);
     destMarker = L.marker([lat, lon], { icon: destPinIcon }).addTo(map);
-    updateSearchCardCompactState();
     computeRoute();
   }
 
@@ -1641,7 +1624,6 @@
     renderAltRoutes();
     routeSummary.classList.remove('visible');
     hideRouteError();
-    updateSearchCardCompactState();
     renderTripList();
   }
 
@@ -2091,13 +2073,27 @@
     });
   });
 
+  // The search card sits fixed on top of the map and its height changes
+  // with its content (suggestions open, trip list grows, alt-routes show
+  // up, etc). Rather than hiding it, we just tell fitBounds to leave that
+  // much room at the top — so the map pans/zooms out enough that the route
+  // lands in the space still visible underneath the card.
+  function getMapTopInsetPx(){
+    const rect = searchCard.getBoundingClientRect();
+    const visible = !searchCard.classList.contains('hidden-card');
+    return (visible ? rect.height : 0) + 24; // +24px breathing room below the card
+  }
+
   function drawRoute(route){
     const latlngs = route.geometry.coordinates.map(c => [c[1], c[0]]);
     routeLatLngs = route.geometry.coordinates.map(c => ({ lat: c[1], lon: c[0] }));
     if (routeLayer) map.removeLayer(routeLayer);
     routeLayer = L.polyline(latlngs, { color: '#2463D6', weight: 5, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(map);
     if (navState !== 'navigating'){
-      map.fitBounds(routeLayer.getBounds(), { padding: [60, 60] });
+      map.fitBounds(routeLayer.getBounds(), {
+        paddingTopLeft: [40, getMapTopInsetPx()],
+        paddingBottomRight: [40, 40],
+      });
     }
   }
 
