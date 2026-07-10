@@ -783,8 +783,8 @@
       </div>
       <div style="font-size:11px; color:var(--steel); margin-top:8px; line-height:1.4;">When a route is available, alternatives to choose from (e.g. via highway or via ferry) appear under the route summary automatically.</div>
 
-      <div class="settings-row-title" style="margin-top:18px;">Offline maps</div>
-      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Map tiles you've browsed are cached automatically as you go. On launch, three layers cache automatically: detailed street-level tiles for ~20km around your GPS position (for real turn-by-turn), a lighter regional layer covering ~1500km (so the map and search still work further from home, just less detailed), and a coarse world view so the map never looks blank. To be sure a specific area is ready before you lose signal, save it here too.</div>
+      <div class="settings-row-title" style="margin-top:18px;">Offline maps &amp; routing</div>
+      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Map tiles you've browsed are cached automatically as you go. On launch, three layers cache automatically: detailed street-level tiles for ~20km around your GPS position (with road data for calculating new routes offline), a lighter regional layer covering ~1500km (map + search only — routing needs the detailed layer), and a coarse world view so the map never looks blank. New routes can be calculated with no connection as long as both ends of the trip fall inside an area you've cached — offline routing uses simpler turn instructions and rougher time estimates than live routing, with no traffic data. To be sure a specific area is ready before you lose signal, save it here too.</div>
       <div class="settings-row-title" style="margin-top:12px; font-size:11px;">Automatic caching uses</div>
       <div class="mode-pills" id="autoCacheNetworkPills">
         <button class="mode-pill" data-net-choice="wifi">Wi-Fi only</button>
@@ -1140,7 +1140,10 @@
       });
       const places = await fetchNamedPlacesInBounds(bounds);
       if (places.length) mergeSavedPlaces(places);
-      showToast(`Saved ${tileCount} map tiles${places.length ? ` and ${places.length} nearby places` : ''} for offline use.`);
+      if (saveAreaProgress) saveAreaProgress.textContent = 'Saving road data for offline routing…';
+      const center = bounds.getCenter();
+      await saveRoadGraphForBounds(bounds, `manual_${center.lat.toFixed(2)}_${center.lng.toFixed(2)}`);
+      showToast(`Saved ${tileCount} map tiles${places.length ? `, ${places.length} nearby places,` : ','} and road data for offline routing.`);
     } catch (_) {
       showToast('Could not save this area — check your connection and try again.', true);
     } finally {
@@ -1155,6 +1158,7 @@
     try {
       await caches.delete(TILE_CACHE_NAME);
       clearSavedPlaces();
+      await idbClearRegions();
       localStorage.removeItem(WORLD_OVERVIEW_DONE_KEY);
       localStorage.removeItem(AUTO_PLACES_META_KEY);
       localStorage.removeItem(CONTINENT_CACHE_META_KEY);
@@ -1241,6 +1245,12 @@
       if (shouldRefetchPlacesNear(lat, lon)){
         const places = await fetchNamedPlacesInBounds(bounds);
         if (places.length) mergeSavedPlaces(places);
+        // One region per rough location (like tiles/places already do) so
+        // road data for places you've actually visited accumulates rather
+        // than being overwritten by the next stop — MAX_ROAD_REGIONS above
+        // caps how many of these stick around.
+        await saveRoadGraphForBounds(bounds, `auto_${lat.toFixed(2)}_${lon.toFixed(2)}`);
+        updateOfflineStorageEstimate();
         try { localStorage.setItem(AUTO_PLACES_META_KEY, JSON.stringify({ lat, lon, at: Date.now() })); } catch (_) {}
       }
     } catch (_) { /* best-effort background task — quietly skip on failure */ }
@@ -1263,7 +1273,297 @@
       updateOfflineStorageEstimate();
     } catch (_) { /* best-effort — try again next launch */ }
   }
-  cacheWorldOverviewOnce();
+  // =================================================================
+  // OFFLINE ROUTING ENGINE
+  // OSRM is a server — there's no way to run it in-browser — so offline
+  // route *calculation* needs its own lightweight engine: fetch the road
+  // network (as OSM ways) for areas we've already cached tiles for, build
+  // a graph of it, and run A* pathfinding on-device. This only covers the
+  // local ~20km detailed tier (manual saves + auto-cache-around-me), never
+  // the coarse continent tier — that one is deliberately too sparse for
+  // real routing. Storage uses IndexedDB rather than localStorage/Cache
+  // Storage: road graphs are structured, relational data (nodes + edges)
+  // and can run into a few MB, well past what localStorage comfortably
+  // holds.
+  // ---------------------------------------------------------------
+
+  // ---- IndexedDB: tiny promise wrapper, one object store for road graphs ----
+  const ROUTING_DB_NAME = 'tmw-routing-db';
+  const ROUTING_DB_STORE = 'roadRegions';
+  const MAX_ROAD_REGIONS = 6; // evict oldest beyond this so storage doesn't grow unbounded over weeks of driving
+  let routingDbPromise = null;
+
+  function openRoutingDb(){
+    if (routingDbPromise) return routingDbPromise;
+    routingDbPromise = new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)){ reject(new Error('IndexedDB unavailable')); return; }
+      const req = indexedDB.open(ROUTING_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(ROUTING_DB_STORE)){
+          db.createObjectStore(ROUTING_DB_STORE, { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return routingDbPromise;
+  }
+
+  async function idbGetAllRegions(){
+    try {
+      const db = await openRoutingDb();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(ROUTING_DB_STORE, 'readonly');
+        const req = tx.objectStore(ROUTING_DB_STORE).getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      });
+    } catch (_) { return []; }
+  }
+
+  async function idbPutRegion(region){
+    try {
+      const db = await openRoutingDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(ROUTING_DB_STORE, 'readwrite');
+        tx.objectStore(ROUTING_DB_STORE).put(region);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+      // Evict oldest regions beyond the cap.
+      const all = await idbGetAllRegions();
+      if (all.length > MAX_ROAD_REGIONS){
+        const toEvict = all.sort((a, b) => a.savedAt - b.savedAt).slice(0, all.length - MAX_ROAD_REGIONS);
+        const db2 = await openRoutingDb();
+        const tx2 = db2.transaction(ROUTING_DB_STORE, 'readwrite');
+        toEvict.forEach(r => tx2.objectStore(ROUTING_DB_STORE).delete(r.id));
+      }
+      offlineGraphDirty = true;
+    } catch (_) { /* best-effort — routing simply won't have this region if it fails */ }
+  }
+
+  async function idbClearRegions(){
+    try {
+      const db = await openRoutingDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(ROUTING_DB_STORE, 'readwrite');
+        tx.objectStore(ROUTING_DB_STORE).clear();
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (_) { /* ignore */ }
+    offlineGraphDirty = true;
+    offlineGraphCache = null;
+  }
+
+  // ---- Fetch + parse the road network for an area (Overpass, geometry mode) ----
+  // "out geom" returns each way with its node ids AND their coordinates
+  // together, so intersections (shared node ids across ways) fall out for
+  // free — no second recursive query needed. Covers everything from
+  // motorways down to footpaths so driving/cycling/walking all have
+  // something to route on; per-mode weighting (below) decides what's
+  // actually usable for a given trip.
+  const ROAD_HIGHWAY_TYPES = ['motorway','motorway_link','trunk','trunk_link','primary','primary_link',
+    'secondary','secondary_link','tertiary','tertiary_link','unclassified','residential','living_street',
+    'service','pedestrian','track','path','footway','cycleway','steps'];
+  const MAX_WAYS_PER_REGION = 12000; // safety cap so one dense city fetch can't blow up device memory
+
+  async function fetchRoadGraphForBounds(bounds){
+    const query = `[out:json][timeout:25];way["highway"~"^(${ROAD_HIGHWAY_TYPES.join('|')})$"]` +
+      `(${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});out geom qt;`;
+    const res = await fetch(OVERPASS_ENDPOINT, { method: 'POST', body: 'data=' + encodeURIComponent(query) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.elements) return null;
+    const nodes = {};
+    const edges = [];
+    const ways = data.elements.slice(0, MAX_WAYS_PER_REGION);
+    ways.forEach(way => {
+      if (!way.geometry || way.geometry.length < 2 || !way.nodes) return;
+      const tags = way.tags || {};
+      const highway = tags.highway;
+      const name = tags.name || null;
+      const oneway = tags.oneway || null;
+      const surface = tags.surface || null;
+      for (let i = 0; i < way.nodes.length - 1; i++){
+        const idA = String(way.nodes[i]), idB = String(way.nodes[i + 1]);
+        const gA = way.geometry[i], gB = way.geometry[i + 1];
+        if (!gA || !gB) continue;
+        nodes[idA] = [gA.lat, gA.lon];
+        nodes[idB] = [gB.lat, gB.lon];
+        const dist = distMeters({ lat: gA.lat, lon: gA.lon }, { lat: gB.lat, lon: gB.lon });
+        if (dist <= 0) continue;
+        edges.push({ a: idA, b: idB, distance: dist, highway, name, oneway, surface });
+      }
+    });
+    return { nodes, edges };
+  }
+
+  async function saveRoadGraphForBounds(bounds, regionId){
+    try {
+      const graph = await fetchRoadGraphForBounds(bounds);
+      if (graph && (graph.edges.length)){
+        await idbPutRegion({ id: regionId, savedAt: Date.now(), bounds: { s: bounds.getSouth(), w: bounds.getWest(), n: bounds.getNorth(), e: bounds.getEast() }, nodes: graph.nodes, edges: graph.edges });
+      }
+    } catch (_) { /* best-effort — offline routing just won't cover this area */ }
+  }
+
+  // ---- Merge all stored regions into one in-memory routable graph ----
+  // Cached until a new region is saved (offlineGraphDirty), since merging
+  // is a bit of work and route requests can happen back-to-back.
+  let offlineGraphCache = null;
+  let offlineGraphDirty = true;
+
+  async function loadOfflineGraph(){
+    if (offlineGraphCache && !offlineGraphDirty) return offlineGraphCache;
+    const regions = await idbGetAllRegions();
+    const nodes = new Map();
+    const adjacency = new Map();
+    function addEdge(a, b, meta){
+      if (!adjacency.has(a)) adjacency.set(a, []);
+      adjacency.get(a).push({ to: b, distance: meta.distance, highway: meta.highway, name: meta.name, surface: meta.surface });
+    }
+    regions.forEach(region => {
+      Object.keys(region.nodes).forEach(id => { if (!nodes.has(id)) nodes.set(id, region.nodes[id]); });
+      region.edges.forEach(e => {
+        if (e.oneway === 'yes' || e.oneway === 'true' || e.oneway === '1'){
+          addEdge(e.a, e.b, e);
+        } else if (e.oneway === '-1'){
+          addEdge(e.b, e.a, e);
+        } else {
+          addEdge(e.a, e.b, e);
+          addEdge(e.b, e.a, e);
+        }
+      });
+    });
+    offlineGraphCache = { nodes, adjacency };
+    offlineGraphDirty = false;
+    return offlineGraphCache;
+  }
+
+  const OFFLINE_SNAP_MAX_M = 400; // beyond this, treat the point as "not covered" rather than snapping somewhere useless
+
+  function nearestGraphNode(graph, lat, lon){
+    let bestId = null, bestD = Infinity;
+    graph.nodes.forEach((coord, id) => {
+      const d = distMeters({ lat, lon }, { lat: coord[0], lon: coord[1] });
+      if (d < bestD){ bestD = d; bestId = id; }
+    });
+    return (bestId !== null && bestD <= OFFLINE_SNAP_MAX_M) ? { id: bestId, distance: bestD } : null;
+  }
+
+  // ---- Binary min-heap (A* open set) ----
+  class MinHeap {
+    constructor(){ this.items = []; }
+    get size(){ return this.items.length; }
+    push(item){
+      this.items.push(item);
+      let i = this.items.length - 1;
+      while (i > 0){
+        const parent = (i - 1) >> 1;
+        if (this.items[parent].f <= this.items[i].f) break;
+        [this.items[parent], this.items[i]] = [this.items[i], this.items[parent]];
+        i = parent;
+      }
+    }
+    pop(){
+      const top = this.items[0];
+      const last = this.items.pop();
+      if (this.items.length){
+        this.items[0] = last;
+        let i = 0;
+        while (true){
+          const l = i * 2 + 1, r = i * 2 + 2;
+          let smallest = i;
+          if (l < this.items.length && this.items[l].f < this.items[smallest].f) smallest = l;
+          if (r < this.items.length && this.items[r].f < this.items[smallest].f) smallest = r;
+          if (smallest === i) break;
+          [this.items[smallest], this.items[i]] = [this.items[i], this.items[smallest]];
+          i = smallest;
+        }
+      }
+      return top;
+    }
+  }
+
+  // Per-mode routability + preference weighting. Factor multiplies plain
+  // distance to make an edge "cost" more (or block it outright); factors
+  // stay >= 1 so straight-line-distance remains an admissible A* heuristic.
+  const OFFLINE_MODE_FACTORS = {
+    driving: { motorway: 1, motorway_link: 1.05, trunk: 1.05, trunk_link: 1.1, primary: 1.1, primary_link: 1.15,
+      secondary: 1.2, secondary_link: 1.25, tertiary: 1.3, tertiary_link: 1.35, unclassified: 1.5,
+      residential: 1.6, living_street: 2.2, service: 2.5 },
+    cycling: { cycleway: 1, path: 1.3, track: 1.5, living_street: 1.2, residential: 1.2, service: 1.6,
+      unclassified: 1.3, tertiary: 1.4, secondary: 1.8, primary: 2.8 },
+    walking: { footway: 1, pedestrian: 1, path: 1.1, track: 1.3, living_street: 1.1, residential: 1.2,
+      service: 1.4, steps: 1.6, unclassified: 1.6, tertiary: 1.8, secondary: 2.4 },
+  };
+  const OFFLINE_UNPAVED_SURFACES = ['unpaved', 'gravel', 'dirt', 'ground', 'grass', 'sand', 'earth'];
+
+  function edgeWeight(edge, mode){
+    const factors = OFFLINE_MODE_FACTORS[mode] || OFFLINE_MODE_FACTORS.driving;
+    let factor = factors[edge.highway];
+    if (typeof factor !== 'number') return Infinity; // this highway type isn't usable for this mode
+    if (routeAvoid.highway && mode === 'driving' && (edge.highway === 'motorway' || edge.highway === 'trunk')) factor *= 15;
+    if (routeAvoid.unpaved && edge.surface && OFFLINE_UNPAVED_SURFACES.includes(edge.surface)) factor *= 4;
+    return edge.distance * factor;
+  }
+
+  function bearingDeg(a, b){
+    const lat1 = a[0] * Math.PI / 180, lat2 = b[0] * Math.PI / 180;
+    const dLon = (b[1] - a[1]) * Math.PI / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+
+  // A* over the merged graph. Returns the node-id path and the edge chosen
+  // for each hop (so highway/name/distance survive for step-building), or
+  // null if unreachable within the cached data.
+  function astarPath(graph, startId, goalId, mode){
+    if (startId === goalId) return { nodeIds: [startId], edgesUsed: [] };
+    const goalCoord = graph.nodes.get(goalId);
+    const gScore = new Map([[startId, 0]]);
+    const cameFrom = new Map(); // nodeId -> { from, edge }
+    const open = new MinHeap();
+    const closed = new Set();
+    open.push({ id: startId, f: 0 });
+    let guard = 0;
+    while (open.size){
+      if (++guard > 200000) return null; // runaway safety valve
+      const current = open.pop();
+      if (closed.has(current.id)) continue;
+      if (current.id === goalId){
+        const nodeIds = [goalId];
+        const edgesUsed = [];
+        let cur = goalId;
+        while (cameFrom.has(cur)){
+          const step = cameFrom.get(cur);
+          edgesUsed.unshift(step.edge);
+          nodeIds.unshift(step.from);
+          cur = step.from;
+        }
+        return { nodeIds, edgesUsed };
+      }
+      closed.add(current.id);
+      const neighbors = graph.adjacency.get(current.id) || [];
+      for (const edge of neighbors){
+        if (closed.has(edge.to)) continue;
+        const w = edgeWeight(edge, mode);
+        if (!isFinite(w)) continue;
+        const tentativeG = gScore.get(current.id) + w;
+        if (tentativeG < (gScore.has(edge.to) ? gScore.get(edge.to) : Infinity)){
+          gScore.set(edge.to, tentativeG);
+          cameFrom.set(edge.to, { from: current.id, edge });
+          const toCoord = graph.nodes.get(edge.to);
+          const h = toCoord ? distMeters({ lat: toCoord[0], lon: toCoord[1] }, { lat: goalCoord[0], lon: goalCoord[1] }) : 0;
+          open.push({ id: edge.to, f: tentativeG + h });
+        }
+      }
+    }
+    return null;
+  }
 
   // ---- Automatic continent/region-scale caching on first GPS fix ----
   // A middle tier between the one-time world overview (zoom 0–5, silhouette
@@ -2486,6 +2786,104 @@
   });
 
   // ---------------------------------------------------------------
+  // OFFLINE ROUTE BUILDING — turns an A* path from the engine above into
+  // the exact same shape fetchRoute() returns from OSRM (distance,
+  // duration, geometry.coordinates, legs[].steps[]), so drawRoute(),
+  // buildFlatSteps(), instructionForStep() and the whole nav HUD work
+  // completely unchanged whether a route came from the network or the
+  // on-device graph.
+  // ---------------------------------------------------------------
+  const OFFLINE_MODE_SPEED_MPS = { driving: 12.5, cycling: 4.2, walking: 1.3 }; // conservative — no live traffic/terrain data offline
+
+  function bearingModifier(deltaDeg){
+    const d = ((deltaDeg + 180) % 360 + 360) % 360 - 180; // normalize to -180..180
+    const abs = Math.abs(d);
+    if (abs < 20) return 'straight';
+    if (abs < 60) return d > 0 ? 'slight right' : 'slight left';
+    if (abs < 140) return d > 0 ? 'right' : 'left';
+    return d > 0 ? 'sharp right' : 'sharp left';
+  }
+
+  // Chunks the raw node-by-node A* path into named-road "steps", the same
+  // granularity OSRM gives us — a new step starts at 'depart', whenever the
+  // road name changes, and at the final 'arrive'.
+  function buildOfflineSteps(graph, nodeIds, edgesUsed){
+    const steps = [];
+    if (!edgesUsed.length){
+      const coord = graph.nodes.get(nodeIds[0]);
+      steps.push({ maneuver: { type: 'arrive', location: [coord[1], coord[0]] }, name: '', distance: 0, duration: 0 });
+      return { steps, distance: 0 };
+    }
+    let totalDistance = 0;
+    let runStart = 0;
+    for (let i = 1; i <= edgesUsed.length; i++){
+      const prevEdge = edgesUsed[i - 1];
+      const nextEdge = edgesUsed[i];
+      if (nextEdge && nextEdge.name === prevEdge.name) continue; // still the same named road, keep extending this step
+
+      let runDist = 0;
+      for (let k = runStart; k < i; k++) runDist += edgesUsed[k].distance;
+      const fromCoord = graph.nodes.get(nodeIds[runStart]);
+
+      let type, modifier;
+      if (runStart === 0){
+        type = 'depart';
+        modifier = 'straight';
+      } else {
+        const priorCoord = graph.nodes.get(nodeIds[runStart - 1]);
+        const afterCoord = graph.nodes.get(nodeIds[Math.min(runStart + 1, nodeIds.length - 1)]);
+        modifier = bearingModifier(bearingDeg(fromCoord, afterCoord) - bearingDeg(priorCoord, fromCoord));
+        type = modifier === 'straight' ? 'continue' : 'turn';
+      }
+
+      steps.push({
+        maneuver: { type, modifier, location: [fromCoord[1], fromCoord[0]] },
+        name: prevEdge.name || 'the road',
+        distance: runDist,
+        duration: 0, // filled in by the caller once mode speed is known
+      });
+      totalDistance += runDist;
+      runStart = i;
+    }
+    const endCoord = graph.nodes.get(nodeIds[nodeIds.length - 1]);
+    steps.push({ maneuver: { type: 'arrive', location: [endCoord[1], endCoord[0]] }, name: '', distance: 0, duration: 0 });
+    return { steps, distance: totalDistance };
+  }
+
+  async function computeOfflineLeg(graph, fromPt, toPt, mode){
+    const startSnap = nearestGraphNode(graph, fromPt.lat, fromPt.lon);
+    const goalSnap = nearestGraphNode(graph, toPt.lat, toPt.lon);
+    if (!startSnap || !goalSnap) return null; // one end of this leg isn't near any cached road
+    const path = astarPath(graph, startSnap.id, goalSnap.id, mode);
+    if (!path) return null; // no route between them in the cached data
+    const built = buildOfflineSteps(graph, path.nodeIds, path.edgesUsed);
+    const speed = OFFLINE_MODE_SPEED_MPS[mode] || OFFLINE_MODE_SPEED_MPS.driving;
+    built.steps.forEach(s => { s.duration = s.distance / speed; });
+    const coordinates = path.nodeIds.map(id => { const c = graph.nodes.get(id); return [c[1], c[0]]; });
+    return { distance: built.distance, duration: built.distance / speed, steps: built.steps, coordinates };
+  }
+
+  // Mirrors fetchRoute()'s return shape: an array of route objects (just
+  // one here — no alternatives offline). Returns null if any leg of the
+  // trip has no coverage in the cached road graph.
+  async function computeOfflineRoute(points, mode){
+    const graph = await loadOfflineGraph();
+    if (!graph.nodes.size) return null;
+    const legs = [];
+    let coordinates = [];
+    let totalDistance = 0, totalDuration = 0;
+    for (let i = 0; i < points.length - 1; i++){
+      const leg = await computeOfflineLeg(graph, points[i], points[i + 1], mode);
+      if (!leg) return null;
+      legs.push({ steps: leg.steps });
+      coordinates = coordinates.concat(i === 0 ? leg.coordinates : leg.coordinates.slice(1));
+      totalDistance += leg.distance;
+      totalDuration += leg.duration;
+    }
+    return [{ distance: totalDistance, duration: totalDuration, geometry: { coordinates }, legs, _offline: true }];
+  }
+
+  // ---------------------------------------------------------------
   // ROUTE FETCH (OSRM) — accepts an ordered list of points so the
   // same call handles a plain A-to-B trip or one with waypoints.
   // ---------------------------------------------------------------
@@ -2523,16 +2921,46 @@
     return flat;
   }
 
+  // Shared by both the OSRM success path and the offline fallback below —
+  // draws the route and updates all the summary/nav state the same way
+  // regardless of where the route data came from.
+  function applyComputedRoutes(routes, opts){
+    availableRoutes = routes.map((r, i) => Object.assign({}, r, { _label: r._offline ? 'Offline route' : (i === 0 ? 'Fastest' : 'Alternative ' + i) }));
+    selectedRouteIndex = 0;
+    const route = availableRoutes[0];
+
+    drawRoute(route);
+    routeTotalDistanceM = route.distance;
+    routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
+    routeSteps = buildFlatSteps(route, waypoints.slice());
+    currentStepIndex = 0;
+    alertedStepIndexForPrepare = null;
+    alertedStepIndexForTurn = null;
+    alertedStepIndexForImminent = null;
+
+    rsTime.textContent = formatDuration(routeTotalDurationS);
+    rsSub.textContent = `${formatDistance(routeTotalDistanceM)} · arrive ${formatClock(new Date(Date.now() + routeTotalDurationS * 1000))}` + (route._offline ? ' · offline estimate' : '');
+    routeSummary.classList.add('visible');
+    navState = 'previewing';
+    renderTripList();
+    renderAltRoutes();
+    if (route._offline){
+      showToast('Routed offline using cached road data — no live traffic, and turn instructions are approximate.');
+    } else if (opts && opts.degraded && !excludeDegradedToastShown) {
+      excludeDegradedToastShown = true;
+      showToast("Route preferences like avoid-highways aren't supported by this routing server — showing the standard route.");
+    }
+  }
+
   async function computeRoute(){
     if (!destination) return;
     if (!lastGoodLatLng){ showRouteError('Waiting for a GPS fix before routing — hang tight.'); return; }
     hideRouteError();
     const thisToken = ++routeFetchToken;
     startNavBtn.disabled = true;
+    const origin = { lat: lastGoodLatLng[0], lon: lastGoodLatLng[1] };
+    const points = [origin, ...waypoints, destination];
     try {
-      const origin = { lat: lastGoodLatLng[0], lon: lastGoodLatLng[1] };
-      const points = [origin, ...waypoints, destination];
-
       const excludes = [];
       if (excludeSupported){
         if (routeAvoid.highway) excludes.push('motorway');
@@ -2558,29 +2986,7 @@
       }
       if (thisToken !== routeFetchToken) return;
 
-      availableRoutes = routes.map((r, i) => Object.assign({}, r, { _label: i === 0 ? 'Fastest' : 'Alternative ' + i }));
-      selectedRouteIndex = 0;
-      const route = availableRoutes[0];
-
-      drawRoute(route);
-      routeTotalDistanceM = route.distance;
-      routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
-      routeSteps = buildFlatSteps(route, waypoints.slice());
-      currentStepIndex = 0;
-      alertedStepIndexForPrepare = null;
-      alertedStepIndexForTurn = null;
-      alertedStepIndexForImminent = null;
-
-      rsTime.textContent = formatDuration(routeTotalDurationS);
-      rsSub.textContent = `${formatDistance(routeTotalDistanceM)} · arrive ${formatClock(new Date(Date.now() + routeTotalDurationS * 1000))}`;
-      routeSummary.classList.add('visible');
-      navState = 'previewing';
-      renderTripList();
-      renderAltRoutes();
-      if (degraded && !excludeDegradedToastShown) {
-        excludeDegradedToastShown = true;
-        showToast("Route preferences like avoid-highways aren't supported by this routing server — showing the standard route.");
-      }
+      applyComputedRoutes(routes, { degraded });
 
       // Fetch one more labeled variant in the background (e.g. "without
       // highways" for a driving trip that didn't already exclude them) so
@@ -2595,10 +3001,20 @@
       });
     } catch (err) {
       if (thisToken !== routeFetchToken) return;
+      // Live routing failed (offline, or the routing server is down) — fall
+      // back to the on-device road graph, if this trip's start/end are
+      // both within an area we've cached locally.
+      let offlineRoutes = null;
+      try { offlineRoutes = await computeOfflineRoute(points, selectedMode); } catch (_) { /* fall through to the error below */ }
+      if (thisToken !== routeFetchToken) return;
+      if (offlineRoutes){
+        applyComputedRoutes(offlineRoutes, {});
+        return;
+      }
       availableRoutes = [];
       renderAltRoutes();
       showRouteError(isOffline
-        ? "Offline — can't calculate a new route without a connection. Cached tiles still work, but routing needs signal."
+        ? "Offline, and this trip isn't within an area you've cached — save it here (or nearby) with a connection first."
         : "Couldn't calculate a route for this mode — try again or pick another destination.");
       routeSummary.classList.remove('visible');
     } finally {
