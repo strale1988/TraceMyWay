@@ -779,6 +779,10 @@
       <button id="clearOfflineBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px; margin-top:8px;">Clear offline map data</button>
       <div id="offlineStorageEstimate" style="font-size:11px; color:var(--steel); margin-top:8px;"></div>
 
+      <div class="settings-row-title" style="margin-top:18px;">Offline search</div>
+      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Destinations you've navigated to are remembered on this device, so you can find and re-select them with no connection. General place search still needs signal.</div>
+      <button id="clearRecentBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Clear recent destinations</button>
+
       <button id="closeSettingsBtn" class="btn-primary" style="width:100%; border-radius:12px; padding:12px; margin-top:18px;">Done</button>
     </div>
   </div>
@@ -1075,6 +1079,12 @@
 
   if (saveAreaBtn) saveAreaBtn.addEventListener('click', saveCurrentAreaOffline);
   if (clearOfflineBtn) clearOfflineBtn.addEventListener('click', clearOfflineMapData);
+
+  const clearRecentBtn = document.getElementById('clearRecentBtn');
+  if (clearRecentBtn) clearRecentBtn.addEventListener('click', () => {
+    clearRecentDestinations();
+    showToast('Recent destinations cleared.');
+  });
 
   const gpsToast = document.getElementById('gpsToast');
   let toastTimer = null;
@@ -1806,10 +1816,44 @@
   }
 
   // ---------------------------------------------------------------
+  // RECENT DESTINATIONS — lightweight offline "search". Full place search
+  // (Nominatim) needs a connection and isn't something we can reasonably
+  // cache; what actually matters offline is being able to get back to
+  // somewhere you've already navigated to (home, a saved trip, etc.), so we
+  // just remember those locally and let search match against them with no
+  // network involved at all.
+  // ---------------------------------------------------------------
+  const RECENT_DESTINATIONS_KEY = 'tmw_recent_destinations';
+  const MAX_RECENT_DESTINATIONS = 20;
+
+  function loadRecentDestinations(){
+    try { return JSON.parse(localStorage.getItem(RECENT_DESTINATIONS_KEY) || '[]'); } catch (_) { return []; }
+  }
+  function saveRecentDestination(lat, lon, label){
+    if (!label) return;
+    try {
+      let list = loadRecentDestinations();
+      // Same place searched again moves to the front instead of duplicating.
+      list = list.filter(d => !(d.label === label && Math.abs(d.lat - lat) < 0.0005 && Math.abs(d.lon - lon) < 0.0005));
+      list.unshift({ lat, lon, label, savedAt: Date.now() });
+      localStorage.setItem(RECENT_DESTINATIONS_KEY, JSON.stringify(list.slice(0, MAX_RECENT_DESTINATIONS)));
+    } catch (_) { /* storage full/unavailable — not worth surfacing an error for */ }
+  }
+  function searchRecentDestinations(query){
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return loadRecentDestinations().filter(d => d.label.toLowerCase().includes(q));
+  }
+  function clearRecentDestinations(){
+    try { localStorage.removeItem(RECENT_DESTINATIONS_KEY); } catch (_) {}
+  }
+
+  // ---------------------------------------------------------------
   // TRIP MANAGEMENT — destination + ordered waypoints
   // ---------------------------------------------------------------
   function setDestinationFromSelection(lat, lon, label){
     destination = { lat, lon, label };
+    saveRecentDestination(lat, lon, label);
     if (destMarker) map.removeLayer(destMarker);
     destMarker = L.marker([lat, lon], { icon: destPinIcon }).addTo(map);
     updatePinButtonsAvailability();
@@ -1818,6 +1862,7 @@
 
   function addWaypointFromSelection(lat, lon, label){
     if (!destination){ showToast('Set a destination first, then add stops along the way.'); return; }
+    saveRecentDestination(lat, lon, label);
     const wp = { lat, lon, label, marker: null };
     wp.marker = L.marker([lat, lon], { icon: waypointPinIcon(waypoints.length + 1) }).addTo(map);
     waypoints.push(wp);
@@ -1890,7 +1935,17 @@
     const q = destInput.value.trim();
     clearTimeout(searchDebounce);
     if (q.length < 3){ suggestionsList.classList.remove('visible'); suggestionsList.innerHTML = ''; return; }
-    searchDebounce = setTimeout(() => runGeocodeSearch(q), 350);
+
+    // Recent destinations are a local lookup — show them immediately, no
+    // debounce and no network needed, so they're there even offline.
+    const recentMatches = searchRecentDestinations(q);
+    renderSuggestions([], recentMatches);
+
+    if (isOffline){
+      if (!recentMatches.length) showToast("Offline — only destinations you've already been to can be searched right now.", true);
+      return; // Nominatim can't succeed with no connection, don't bother trying
+    }
+    searchDebounce = setTimeout(() => runGeocodeSearch(q, recentMatches), 350);
   });
 
   clearDestBtn.addEventListener('click', () => {
@@ -1901,7 +1956,7 @@
     clearTrip();
   });
 
-  async function runGeocodeSearch(query){
+  async function runGeocodeSearch(query, recentMatches){
     const thisToken = ++searchToken;
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&addressdetails=0&q=${encodeURIComponent(query)}`;
@@ -1909,15 +1964,50 @@
       if (thisToken !== searchToken) return;
       if (!res.ok) throw new Error('Search failed');
       const results = await res.json();
-      renderSuggestions(results);
+      if (thisToken !== searchToken) return;
+      renderSuggestions(results, recentMatches);
     } catch (_) {
-      if (thisToken === searchToken) showToast('Search is unavailable right now.');
+      if (thisToken !== searchToken) return;
+      renderSuggestions([], recentMatches);
+      showToast((recentMatches && recentMatches.length)
+        ? 'Live search unavailable — showing destinations you\'ve already been to.'
+        : 'Search is unavailable right now.');
     }
   }
 
-  function renderSuggestions(results){
+  function renderSuggestions(results, recentMatches){
+    recentMatches = recentMatches || [];
     suggestionsList.innerHTML = '';
-    if (!results.length){ suggestionsList.classList.remove('visible'); return; }
+    if (!results.length && !recentMatches.length){ suggestionsList.classList.remove('visible'); return; }
+
+    recentMatches.forEach(d => {
+      const item = document.createElement('div');
+      item.className = 'suggestion-item';
+      item.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--hiviz); flex-shrink:0;"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+        <div class="s-text"><div class="s-title"></div><div class="s-sub">Recent · works offline</div></div>
+        <button class="s-add-stop" title="Add as waypoint">+</button>`;
+      item.querySelector('.s-title').textContent = d.label;
+      item.addEventListener('click', () => {
+        destInput.value = '';
+        destInput.blur();
+        clearDestBtn.classList.remove('visible');
+        suggestionsList.classList.remove('visible');
+        suggestionsList.innerHTML = '';
+        setDestinationFromSelection(d.lat, d.lon, d.label);
+      });
+      item.querySelector('.s-add-stop').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        destInput.value = '';
+        destInput.blur();
+        clearDestBtn.classList.remove('visible');
+        suggestionsList.classList.remove('visible');
+        suggestionsList.innerHTML = '';
+        addWaypointFromSelection(d.lat, d.lon, d.label);
+      });
+      suggestionsList.appendChild(item);
+    });
+
     results.forEach(r => {
       const parts = r.display_name.split(',');
       const title = parts[0].trim();
