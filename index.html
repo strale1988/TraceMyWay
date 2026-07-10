@@ -784,20 +784,20 @@
       <div style="font-size:11px; color:var(--steel); margin-top:8px; line-height:1.4;">When a route is available, alternatives to choose from (e.g. via highway or via ferry) appear under the route summary automatically.</div>
 
       <div class="settings-row-title" style="margin-top:18px;">Offline maps</div>
-      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Map tiles you've browsed are cached automatically as you go. The area around your GPS position is also cached on launch, plus a low-detail world view so the map never looks blank. To be sure a specific area is ready before you lose signal, save it here too.</div>
-      <div class="settings-row-title" style="margin-top:12px; font-size:11px;">Auto-cache around me uses</div>
+      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Map tiles you've browsed are cached automatically as you go. On launch, three layers cache automatically: detailed street-level tiles for ~20km around your GPS position (for real turn-by-turn), a lighter regional layer covering ~1500km (so the map and search still work further from home, just less detailed), and a coarse world view so the map never looks blank. To be sure a specific area is ready before you lose signal, save it here too.</div>
+      <div class="settings-row-title" style="margin-top:12px; font-size:11px;">Automatic caching uses</div>
       <div class="mode-pills" id="autoCacheNetworkPills">
         <button class="mode-pill" data-net-choice="wifi">Wi-Fi only</button>
         <button class="mode-pill" data-net-choice="any">Any connection</button>
       </div>
-      <div style="font-size:11px; color:var(--steel); margin-top:8px; margin-bottom:8px; line-height:1.4;">Only applies to the automatic caching on launch — tapping "Save this area for offline" below always works, on any connection.</div>
+      <div style="font-size:11px; color:var(--steel); margin-top:8px; margin-bottom:8px; line-height:1.4;">Applies to all three automatic layers above (local, regional, world). Tapping "Save this area for offline" below always works, on any connection.</div>
       <button id="saveAreaBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Save this area for offline</button>
       <div id="saveAreaProgress" style="font-size:11px; color:var(--steel); margin-top:6px; text-align:center; min-height:14px;"></div>
       <button id="clearOfflineBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px; margin-top:8px;">Clear offline map data</button>
       <div id="offlineStorageEstimate" style="font-size:11px; color:var(--steel); margin-top:8px;"></div>
 
       <div class="settings-row-title" style="margin-top:18px;">Offline search</div>
-      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Destinations you've navigated to are remembered on this device, and saving an area also stores the names of nearby towns and villages — so you can find and re-select any of them with no connection. General place search still needs signal.</div>
+      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Destinations you've navigated to are remembered on this device. Saving an area (manually, or automatically on launch) also stores nearby place names — towns and villages close to you, plus major cities across the wider region — so you can find and re-select any of them with no connection. General free-text place search still needs signal.</div>
       <button id="clearRecentBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Clear recent destinations</button>
 
       <button id="closeSettingsBtn" class="btn-primary" style="width:100%; border-radius:12px; padding:12px; margin-top:18px;">Done</button>
@@ -1079,7 +1079,7 @@
   // auto-cache below) — never on every tile fetch.
   const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
   const SAVED_PLACES_KEY = 'tmw_saved_places';
-  const MAX_SAVED_PLACES = 300;
+  const MAX_SAVED_PLACES = 800; // raised from 300 — the continent-scale tier below adds city names across a much bigger area
   const PLACES_PER_AREA_LIMIT = 40;
 
   function loadSavedPlaces(){
@@ -1106,8 +1106,10 @@
     try { localStorage.removeItem(SAVED_PLACES_KEY); } catch (_) {}
   }
 
-  async function fetchNamedPlacesInBounds(bounds){
-    const query = `[out:json][timeout:20];node["place"~"^(city|town|village)$"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});out body ${PLACES_PER_AREA_LIMIT};`;
+  async function fetchNamedPlacesInBounds(bounds, placeTypes, limit){
+    const types = (placeTypes && placeTypes.length) ? placeTypes : ['city', 'town', 'village'];
+    const cap = limit || PLACES_PER_AREA_LIMIT;
+    const query = `[out:json][timeout:25];node["place"~"^(${types.join('|')})$"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});out body ${cap};`;
     try {
       const res = await fetch(OVERPASS_ENDPOINT, { method: 'POST', body: 'data=' + encodeURIComponent(query) });
       if (!res.ok) return [];
@@ -1154,6 +1156,8 @@
       await caches.delete(TILE_CACHE_NAME);
       clearSavedPlaces();
       localStorage.removeItem(WORLD_OVERVIEW_DONE_KEY);
+      localStorage.removeItem(AUTO_PLACES_META_KEY);
+      localStorage.removeItem(CONTINENT_CACHE_META_KEY);
       showToast('Offline map data cleared.');
     } catch (_) {
       showToast('Could not clear offline data.');
@@ -1260,6 +1264,56 @@
     } catch (_) { /* best-effort — try again next launch */ }
   }
   cacheWorldOverviewOnce();
+
+  // ---- Automatic continent/region-scale caching on first GPS fix ----
+  // A middle tier between the one-time world overview (zoom 0–5, silhouette
+  // only) and the "around me" tier above (zoom 13–17, ~20km, full
+  // turn-by-turn detail). This one covers a much bigger radius — roughly
+  // country/continent scale — at zoom 5–9, so the map still shows real
+  // road shapes and you can see/search a route far outside your starting
+  // point, without trying to cache full street-level detail for an entire
+  // continent (that would be gigabytes instead of tens of MB). Only major
+  // cities are fetched for search, not towns/villages, to keep it light.
+  // Runs once per region: re-runs if you've moved far (e.g. a different
+  // continent) or after a month, same Wi-Fi/any-connection gating as the
+  // tiers above.
+  const CONTINENT_CACHE_RADIUS_KM = 1500;
+  const CONTINENT_CACHE_CENTER_ZOOM = 7;
+  const CONTINENT_CACHE_MIN_ZOOM = 5;
+  const CONTINENT_CACHE_MAX_ZOOM = 9;
+  const CONTINENT_CACHE_ZOOM_RADIUS = 2;
+  const CONTINENT_CACHE_TILE_LIMIT = 9000;
+  const CONTINENT_CACHE_META_KEY = 'tmw_continent_cache_meta';
+  const CONTINENT_CACHE_REFRESH_KM = 800;
+  const CONTINENT_CACHE_REFRESH_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+  const CONTINENT_PLACES_LIMIT = 150;
+
+  function shouldRefreshContinentCache(lat, lon){
+    let meta;
+    try { meta = JSON.parse(localStorage.getItem(CONTINENT_CACHE_META_KEY) || 'null'); } catch (_) { meta = null; }
+    if (!meta) return true;
+    const movedKm = distMeters({ lat, lon }, { lat: meta.lat, lon: meta.lon }) / 1000;
+    return movedKm > CONTINENT_CACHE_REFRESH_KM || (Date.now() - meta.at) > CONTINENT_CACHE_REFRESH_MS;
+  }
+
+  async function cacheContinentAroundPosition(lat, lon){
+    if (!canAutoCacheNow()) return;
+    if (!shouldRefreshContinentCache(lat, lon)) return;
+    try {
+      const bounds = boundsAroundLatLng(lat, lon, CONTINENT_CACHE_RADIUS_KM);
+      const urls = tileUrlsForBounds(bounds, CONTINENT_CACHE_CENTER_ZOOM, CONTINENT_CACHE_ZOOM_RADIUS, CONTINENT_CACHE_MIN_ZOOM, CONTINENT_CACHE_MAX_ZOOM);
+      if (urls.length <= CONTINENT_CACHE_TILE_LIMIT){
+        await cacheTileUrls(urls, null);
+        updateOfflineStorageEstimate();
+      }
+      const places = await fetchNamedPlacesInBounds(bounds, ['city'], CONTINENT_PLACES_LIMIT);
+      if (places.length) mergeSavedPlaces(places);
+      // Mark this region done even if the tile fetch was skipped for being
+      // oversized — retrying the same too-big query every launch wouldn't
+      // help; the local "around me" tier still covers real navigation.
+      try { localStorage.setItem(CONTINENT_CACHE_META_KEY, JSON.stringify({ lat, lon, at: Date.now() })); } catch (_) {}
+    } catch (_) { /* best-effort background task — quietly skip on failure */ }
+  }
 
   const gpsToast = document.getElementById('gpsToast');
   let toastTimer = null;
@@ -1744,6 +1798,14 @@
       }, 1800);
     }
 
+    // Kick off automatic offline caching once, on the first real GPS fix.
+    // Local (detailed, ~20km) first, then the coarser continent tier —
+    // sequenced rather than parallel so the small/important local tiles
+    // aren't competing for bandwidth with the much bigger regional fetch.
+    if (isFirstFix){
+      autoCacheAroundPosition(latlng[0], latlng[1]).then(() => cacheContinentAroundPosition(latlng[0], latlng[1]));
+    }
+
     maybeFetchSpeedLimit(latlng[0], latlng[1]);
 
     if (navState === 'navigating'){
@@ -2111,16 +2173,19 @@
     clearTimeout(searchDebounce);
     if (q.length < 3){ suggestionsList.classList.remove('visible'); suggestionsList.innerHTML = ''; return; }
 
-    // Recent destinations are a local lookup — show them immediately, no
-    // debounce and no network needed, so they're there even offline.
+    // Recent destinations and cached place names (towns/cities saved via
+    // the offline map layers) are both local lookups — show them
+    // immediately, no debounce and no network needed, so they're there
+    // even offline.
     const recentMatches = searchRecentDestinations(q);
-    renderSuggestions([], recentMatches);
+    const savedMatches = searchSavedPlaces(q).slice(0, 8);
+    renderSuggestions([], recentMatches, savedMatches);
 
     if (isOffline){
-      if (!recentMatches.length) showToast("Offline — only destinations you've already been to can be searched right now.", true);
+      if (!recentMatches.length && !savedMatches.length) showToast("Offline — only places you've cached or already been to can be searched right now.", true);
       return; // Nominatim can't succeed with no connection, don't bother trying
     }
-    searchDebounce = setTimeout(() => runGeocodeSearch(q, recentMatches), 350);
+    searchDebounce = setTimeout(() => runGeocodeSearch(q, recentMatches, savedMatches), 350);
   });
 
   clearDestBtn.addEventListener('click', () => {
@@ -2131,7 +2196,7 @@
     clearTrip();
   });
 
-  async function runGeocodeSearch(query, recentMatches){
+  async function runGeocodeSearch(query, recentMatches, savedMatches){
     const thisToken = ++searchToken;
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&addressdetails=0&q=${encodeURIComponent(query)}`;
@@ -2140,48 +2205,59 @@
       if (!res.ok) throw new Error('Search failed');
       const results = await res.json();
       if (thisToken !== searchToken) return;
-      renderSuggestions(results, recentMatches);
+      renderSuggestions(results, recentMatches, savedMatches);
     } catch (_) {
       if (thisToken !== searchToken) return;
-      renderSuggestions([], recentMatches);
-      showToast((recentMatches && recentMatches.length)
-        ? 'Live search unavailable — showing destinations you\'ve already been to.'
+      renderSuggestions([], recentMatches, savedMatches);
+      showToast(((recentMatches && recentMatches.length) || (savedMatches && savedMatches.length))
+        ? 'Live search unavailable — showing places you\'ve cached or already been to.'
         : 'Search is unavailable right now.');
     }
   }
 
-  function renderSuggestions(results, recentMatches){
-    recentMatches = recentMatches || [];
-    suggestionsList.innerHTML = '';
-    if (!results.length && !recentMatches.length){ suggestionsList.classList.remove('visible'); return; }
-
-    recentMatches.forEach(d => {
-      const item = document.createElement('div');
-      item.className = 'suggestion-item';
-      item.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--hiviz); flex-shrink:0;"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
-        <div class="s-text"><div class="s-title"></div><div class="s-sub">Recent · works offline</div></div>
-        <button class="s-add-stop" title="Add as waypoint">+</button>`;
-      item.querySelector('.s-title').textContent = d.label;
-      item.addEventListener('click', () => {
-        destInput.value = '';
-        destInput.blur();
-        clearDestBtn.classList.remove('visible');
-        suggestionsList.classList.remove('visible');
-        suggestionsList.innerHTML = '';
-        setDestinationFromSelection(d.lat, d.lon, d.label);
-      });
-      item.querySelector('.s-add-stop').addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        destInput.value = '';
-        destInput.blur();
-        clearDestBtn.classList.remove('visible');
-        suggestionsList.classList.remove('visible');
-        suggestionsList.innerHTML = '';
-        addWaypointFromSelection(d.lat, d.lon, d.label);
-      });
-      suggestionsList.appendChild(item);
+  function suggestionRow(d, subLabel){
+    const item = document.createElement('div');
+    item.className = 'suggestion-item';
+    item.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--hiviz); flex-shrink:0;"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+      <div class="s-text"><div class="s-title"></div><div class="s-sub">${subLabel}</div></div>
+      <button class="s-add-stop" title="Add as waypoint">+</button>`;
+    item.querySelector('.s-title').textContent = d.label;
+    item.addEventListener('click', () => {
+      destInput.value = '';
+      destInput.blur();
+      clearDestBtn.classList.remove('visible');
+      suggestionsList.classList.remove('visible');
+      suggestionsList.innerHTML = '';
+      setDestinationFromSelection(d.lat, d.lon, d.label);
     });
+    item.querySelector('.s-add-stop').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      destInput.value = '';
+      destInput.blur();
+      clearDestBtn.classList.remove('visible');
+      suggestionsList.classList.remove('visible');
+      suggestionsList.innerHTML = '';
+      addWaypointFromSelection(d.lat, d.lon, d.label);
+    });
+    return item;
+  }
+
+  function renderSuggestions(results, recentMatches, savedMatches){
+    recentMatches = recentMatches || [];
+    savedMatches = savedMatches || [];
+    suggestionsList.innerHTML = '';
+    if (!results.length && !recentMatches.length && !savedMatches.length){ suggestionsList.classList.remove('visible'); return; }
+
+    recentMatches.forEach(d => suggestionsList.appendChild(suggestionRow(d, 'Recent · works offline')));
+
+    // De-dupe against recent destinations already shown above (same rough
+    // spot), then cap how many cached-place rows show so live results
+    // (when available) still have room.
+    savedMatches
+      .filter(d => !recentMatches.some(r => Math.abs(r.lat - d.lat) < 0.005 && Math.abs(r.lon - d.lon) < 0.005))
+      .slice(0, 5)
+      .forEach(d => suggestionsList.appendChild(suggestionRow(d, 'Cached · works offline')));
 
     results.forEach(r => {
       const parts = r.display_name.split(',');
