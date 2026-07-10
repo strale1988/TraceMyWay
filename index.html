@@ -416,6 +416,22 @@
   }
   #modeIndicatorBtn svg{ width:18px; height:18px; }
 
+  /* Drop-pin / add-waypoint-pin buttons — same footprint as the mode
+     indicator so the whole row of icons lines up. "Armed" means the next
+     tap on the map will place that kind of pin. */
+  .icon-btn-inline{
+    flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px;
+    display:flex; align-items:center; justify-content:center;
+    background: var(--panel-hi); border:1px solid var(--line); color: var(--steel);
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .icon-btn-inline svg{ width:18px; height:18px; }
+  .icon-btn-inline.armed{ background: var(--hiviz); color: var(--asphalt); border-color: var(--hiviz); }
+  #addWaypointPinBtn:disabled{ opacity: 0.4; }
+
+  /* While a pin is armed, hint at the tap-target with a crosshair cursor
+     (mouse/trackpad only — harmless no-op on touch). */
+  body.pin-armed #map{ cursor: crosshair; }
   .poi-chip-row{ display:flex; gap:6px; margin-top:10px; overflow-x:auto; padding-bottom:2px; }
   .poi-chip-row::-webkit-scrollbar{ display:none; }
   .poi-chip{
@@ -552,6 +568,9 @@
     #speedLimitSign .speed-value{ font-size: 19px; }
     #searchCard, #hudTurnPanel{ left: 10px; right: 10px; padding: 12px; }
     #hudMetricsBar{ left: 10px; right: 10px; }
+    .search-input-row{ gap: 5px; }
+    #modeIndicatorBtn, .icon-btn-inline{ width: 30px; height: 30px; border-radius: 8px; }
+    #modeIndicatorBtn svg, .icon-btn-inline svg{ width: 16px; height: 16px; }
   }
 </style>
 </head>
@@ -566,9 +585,15 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--steel)">
         <circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
       </svg>
-      <input id="destInput" type="text" placeholder="Search a destination, POI, or tap the map…" autocomplete="off" />
+      <input id="destInput" type="text" placeholder="Search a destination or POI…" autocomplete="off" />
       <button id="clearDestBtn" title="Clear">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
+      <button id="dropPinBtn" class="icon-btn-inline" title="Drop a pin — tap the map to set your destination">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.1-7-11.5A7 7 0 0119 9.5C19 14.9 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.3"/></svg>
+      </button>
+      <button id="addWaypointPinBtn" class="icon-btn-inline" title="Add a waypoint — tap the map to place it">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.1-7-11.5A7 7 0 0119 9.5C19 14.9 12 21 12 21z"/><line x1="12" y1="6.7" x2="12" y2="10.7"/><line x1="10" y1="8.7" x2="14" y2="8.7"/></svg>
       </button>
       <button id="modeIndicatorBtn" title="Travel mode — open in Settings">
         <svg id="modeIndicatorIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/></svg>
@@ -1060,21 +1085,31 @@
     followBtn.classList.toggle('following', followMode);
     followBtn.classList.toggle('heading-up', followMode && headingUpMode);
     if (followMode){
-      map.dragging.disable();
       if (lastGoodLatLng) map.setView(lastGoodLatLng, Math.max(map.getZoom(), 17));
       didInitialAutoCenter = true; // the person took over centering — don't override it
-    } else {
-      map.dragging.enable();
     }
+    // Map dragging stays enabled at all times now — see the dragstart
+    // listener below, which is what actually drops follow mode the moment
+    // someone manually pans, instead of blocking the drag outright.
     // mapRotation/headingBearing above ease toward their new target
     // (0 for north-up, live heading for heading-up) on their own each
     // frame — no need to snap them here.
   }
 
+  // Center-on-me is a simple on/off toggle now — heading-up (north-up vs.
+  // pointing-the-way-you're-going) is toggled separately via the compass
+  // button, so this doesn't need to cycle through three states anymore.
   followBtn.addEventListener('click', () => {
     if (!followMode) setFollowState(true, false);
-    else if (followMode && !headingUpMode) setFollowState(true, true);
     else setFollowState(false, false);
+  });
+
+  // Manually dragging the map is always allowed; doing so while follow
+  // mode is on just drops follow (same convention as most nav apps) so the
+  // render loop's continuous re-centering stops fighting the drag.
+  map.on('dragstart', () => {
+    didInitialAutoCenter = true;
+    if (followMode) setFollowState(false, false);
   });
 
   // ---------------------------------------------------------------
@@ -1244,7 +1279,6 @@
   //     unless they've already searched a destination or taken control of
   //     the map (dragged it or hit follow) in the meantime. ---------------
   let didInitialAutoCenter = false;
-  map.on('dragstart', () => { didInitialAutoCenter = true; });
 
   function startLocationWatch(){
     if (window.isSecureContext === false){
@@ -1588,6 +1622,7 @@
     destination = { lat, lon, label };
     if (destMarker) map.removeLayer(destMarker);
     destMarker = L.marker([lat, lon], { icon: destPinIcon }).addTo(map);
+    updatePinButtonsAvailability();
     computeRoute();
   }
 
@@ -1624,6 +1659,7 @@
     renderAltRoutes();
     routeSummary.classList.remove('visible');
     hideRouteError();
+    updatePinButtonsAvailability();
     renderTripList();
   }
 
@@ -1725,16 +1761,51 @@
     suggestionsList.classList.add('visible');
   }
 
-  // Tap-to-set destination directly on the map (only while browsing, not mid-nav)
+  // ---------------------------------------------------------------
+  // PIN DROP — explicit, button-armed (no more tap-anywhere-on-the-map).
+  // Tap "drop pin" or "add waypoint" to arm that mode, then tap the map to
+  // place it; tapping the armed button again disarms without placing one.
+  // ---------------------------------------------------------------
+  const dropPinBtn        = document.getElementById('dropPinBtn');
+  const addWaypointPinBtn = document.getElementById('addWaypointPinBtn');
+  let pinDropMode = null; // null | 'destination' | 'waypoint'
+
+  function setPinDropMode(mode){
+    pinDropMode = mode;
+    dropPinBtn.classList.toggle('armed', mode === 'destination');
+    addWaypointPinBtn.classList.toggle('armed', mode === 'waypoint');
+    document.body.classList.toggle('pin-armed', !!mode);
+    if (mode === 'destination') showToast('Tap the map to set your destination.', true);
+    else if (mode === 'waypoint') showToast('Tap the map to add a waypoint.', true);
+    else hideToast();
+  }
+
+  function updatePinButtonsAvailability(){
+    addWaypointPinBtn.disabled = !destination;
+    if (!destination && pinDropMode === 'waypoint') setPinDropMode(null);
+  }
+  updatePinButtonsAvailability();
+
+  dropPinBtn.addEventListener('click', () => {
+    setPinDropMode(pinDropMode === 'destination' ? null : 'destination');
+  });
+  addWaypointPinBtn.addEventListener('click', () => {
+    if (addWaypointPinBtn.disabled){ showToast('Set a destination first, then add stops along the way.'); return; }
+    setPinDropMode(pinDropMode === 'waypoint' ? null : 'waypoint');
+  });
+
   map.on('click', (e) => {
-    if (navState === 'navigating') return;
+    if (navState === 'navigating' || !pinDropMode) return;
+    const mode = pinDropMode;
+    setPinDropMode(null);
     destInput.value = '';
     destInput.blur();
     clearDestBtn.classList.remove('visible');
     suggestionsList.classList.remove('visible');
     suggestionsList.innerHTML = '';
     const label = `Dropped pin (${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)})`;
-    setDestinationFromSelection(e.latlng.lat, e.latlng.lng, label);
+    if (mode === 'destination') setDestinationFromSelection(e.latlng.lat, e.latlng.lng, label);
+    else addWaypointFromSelection(e.latlng.lat, e.latlng.lng, label);
   });
 
   // ---------------------------------------------------------------
