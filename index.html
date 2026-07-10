@@ -585,9 +585,19 @@
     width: 100%; max-width: 460px; border-radius: 22px 22px 0 0; padding: 20px;
     padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
     transform: translateY(12px); transition: transform .2s ease;
+    max-height: calc(100vh - 48px);
+    display: flex; flex-direction: column;
+    overflow: visible; /* see #searchCardScroll comment above — scrolling lives on the plain inner box below, not on this blurred/rounded element */
   }
   #settingsOverlay.visible .sheet{ transform: translateY(0); }
-  .sheet-handle{ width: 40px; height: 4px; border-radius: 4px; background: var(--line); margin: 0 auto 16px; }
+  .sheet-handle{ width: 40px; height: 4px; border-radius: 4px; background: var(--line); margin: 0 auto 16px; flex-shrink: 0; }
+  #settingsSheetScroll{
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+  }
+  #settingsSheetScroll::-webkit-scrollbar{ width: 0; height: 0; }
   .settings-row-title{ font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color: var(--steel); margin-bottom:8px; }
 
   .fade-out{ opacity: 0; pointer-events: none; }
@@ -739,6 +749,7 @@
   <div id="settingsOverlay">
     <div class="sheet glass">
       <div class="sheet-handle"></div>
+      <div id="settingsSheetScroll">
       <div class="settings-row-title">Travel mode</div>
       <div class="mode-pills" id="modePills">
         <button class="mode-pill active" data-mode="driving" title="Driving">
@@ -784,6 +795,7 @@
       <button id="clearRecentBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Clear recent destinations</button>
 
       <button id="closeSettingsBtn" class="btn-primary" style="width:100%; border-radius:12px; padding:12px; margin-top:18px;">Done</button>
+      </div>
     </div>
   </div>
 
