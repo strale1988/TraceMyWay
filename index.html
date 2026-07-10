@@ -427,7 +427,6 @@
   .icon-btn-inline svg{ width:18px; height:18px; }
   .icon-btn-inline.armed{ background: var(--hiviz); color: var(--asphalt); border-color: var(--hiviz); }
   #addWaypointPinBtn:disabled{ opacity: 0.4; }
-  #saveTripBtn{ color: var(--hiviz); }
 
   /* While a pin is armed, hint at the tap-target with a crosshair cursor
      (mouse/trackpad only — harmless no-op on touch). */
@@ -550,17 +549,15 @@
 
   .dest-pin{ filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5)); }
 
-  /* Bottom-sheet overlay — shared by the Settings sheet and the Save Trip
-     sheet (any future modal sheet should reuse this class too rather than
-     duplicating the position/backdrop/slide-up rules per-id). */
-  .sheet-overlay{
+  /* Settings sheet */
+  #settingsOverlay{
     position: fixed; inset: 0; z-index: 950;
     background: rgba(0,0,0,0.55);
     display: flex; align-items: flex-end; justify-content: center;
     opacity: 0; pointer-events: none; transition: opacity .2s ease;
   }
-  .sheet-overlay.visible{ opacity: 1; pointer-events: auto; }
-  .sheet-overlay .sheet{
+  #settingsOverlay.visible{ opacity: 1; pointer-events: auto; }
+  #settingsOverlay .sheet{
     width: 100%; max-width: 460px; border-radius: 22px 22px 0 0; padding: 20px;
     padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
     transform: translateY(12px); transition: transform .2s ease;
@@ -568,7 +565,7 @@
     display: flex; flex-direction: column;
     overflow: visible; /* see #searchCardScroll comment above — scrolling lives on the plain inner box below, not on this blurred/rounded element */
   }
-  .sheet-overlay.visible .sheet{ transform: translateY(0); }
+  #settingsOverlay.visible .sheet{ transform: translateY(0); }
   .sheet-handle{ width: 40px; height: 4px; border-radius: 4px; background: var(--line); margin: 0 auto 16px; flex-shrink: 0; }
   #settingsSheetScroll{
     flex: 1 1 auto;
@@ -578,36 +575,6 @@
   }
   #settingsSheetScroll::-webkit-scrollbar{ width: 0; height: 0; }
   .settings-row-title{ font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color: var(--steel); margin-bottom:8px; }
-
-  /* Favorite trips — list rows shown in the idle search card, plus the
-     save-trip sheet's name input and per-row action buttons. */
-  #favoriteTripsList{ display:none; flex-direction:column; margin-bottom:6px; }
-  #favoriteTripsList.visible{ display:flex; }
-  .favtrip-item{
-    display: flex; align-items: center; gap: 10px;
-    padding: 9px 6px; border-bottom: 1px solid var(--line); cursor: pointer;
-  }
-  .favtrip-item:last-child{ border-bottom: none; }
-  .favtrip-item:active{ background: var(--panel-hi); }
-  .favtrip-item .s-text{ flex:1; min-width:0; }
-  .favtrip-item .s-title{ font-size: 13px; color: var(--fog); font-weight: 600; }
-  .favtrip-item .s-sub{ font-size: 11px; color: var(--steel); margin-top: 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .favtrip-item .s-sub .offline-tag{ color: var(--hiviz); }
-  .favtrip-actions{ display:flex; align-items:center; gap:4px; flex-shrink:0; }
-  .favtrip-action-btn{
-    width:30px; height:30px; border-radius:8px; flex-shrink:0;
-    display:flex; align-items:center; justify-content:center;
-    background: var(--panel-hi); border:1px solid var(--line); color: var(--steel);
-  }
-  .favtrip-action-btn:active{ color: var(--fog); }
-  .favtrip-action-btn.caching{ color: var(--hiviz); border-color: rgba(36,99,214,0.4); }
-  #saveTripNameInput{
-    width: 100%; background: var(--panel-hi); border: 1px solid var(--line); color: var(--fog);
-    border-radius: 12px; padding: 12px 14px; font-size: 14px; outline: none;
-  }
-  #saveTripNameInput:focus{ border-color: var(--hiviz); box-shadow: 0 0 0 3px rgba(36,99,214,0.15); }
-  #saveTripNameInput::placeholder{ color: var(--steel); }
-  #saveTripNote{ font-size: 11px; color: var(--steel); margin-top: 10px; line-height: 1.4; }
 
   /* ---- Small / narrow phones (portrait) ---- */
   @media (max-width: 380px){
@@ -654,8 +621,6 @@
          content itself — that combination is what was causing the hairline
          seam artifact across the screen. -->
     <div id="searchCardScroll">
-      <div id="favoriteTripsList"></div>
-
       <div id="suggestionsList"></div>
 
       <div class="poi-chip-row" id="poiChipRow"></div>
@@ -671,27 +636,10 @@
           <span class="rs-time" id="rsTime">—</span>
           <span class="rs-sub" id="rsSub">—</span>
         </div>
-        <button id="saveTripBtn" class="icon-btn-inline" title="Save this trip as a favorite">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-        </button>
         <button id="modeIndicatorBtn" title="Travel mode — open in Settings">
           <svg id="modeIndicatorIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/></svg>
         </button>
         <button id="startNavBtn" class="btn-primary">Start Navigation</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ============ SAVE TRIP SHEET ============ -->
-  <div id="saveTripOverlay" class="sheet-overlay">
-    <div class="sheet glass">
-      <div class="sheet-handle"></div>
-      <div class="settings-row-title">Save this trip</div>
-      <input id="saveTripNameInput" type="text" placeholder="e.g. Weekend cabin" autocomplete="off" maxlength="60" />
-      <div id="saveTripNote"></div>
-      <div style="display:flex; gap:8px; margin-top:16px;">
-        <button id="cancelSaveTripBtn" class="btn-secondary" style="flex:1; border-radius:12px; padding:12px;">Cancel</button>
-        <button id="confirmSaveTripBtn" class="btn-primary" style="flex:1; border-radius:12px; padding:12px;">Save trip</button>
       </div>
     </div>
   </div>
@@ -772,7 +720,7 @@
   </div>
 
   <!-- ============ SETTINGS SHEET ============ -->
-  <div id="settingsOverlay" class="sheet-overlay">
+  <div id="settingsOverlay">
     <div class="sheet glass">
       <div class="sheet-handle"></div>
       <div id="settingsSheetScroll">
@@ -825,10 +773,6 @@
       <div class="settings-row-title" style="margin-top:18px;">Offline search</div>
       <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Destinations you've navigated to are remembered on this device. Saving an area (manually, or automatically on launch) also stores nearby place names — towns and villages close to you, plus major cities across the wider region — so you can find and re-select any of them with no connection. General free-text place search still needs signal.</div>
       <button id="clearRecentBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Clear recent destinations</button>
-
-      <div class="settings-row-title" style="margin-top:18px;">Favorite trips</div>
-      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Tap the star on a calculated route to save it by name, along with a strip of map tiles and road data around its path — so that exact trip can be re-loaded and navigated with no connection later. Saved trips appear at the top of the search card. Deleting a trip here removes it from that list; any tiles/road data it cached stay in the general offline cache until cleared above.</div>
-      <button id="clearFavoriteTripsBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Clear favorite trips</button>
 
       <button id="closeSettingsBtn" class="btn-primary" style="width:100%; border-radius:12px; padding:12px; margin-top:18px;">Done</button>
       </div>
@@ -1212,14 +1156,6 @@
     showToast('Recent destinations cleared.');
   });
 
-  const clearFavoriteTripsBtn = document.getElementById('clearFavoriteTripsBtn');
-  if (clearFavoriteTripsBtn) clearFavoriteTripsBtn.addEventListener('click', () => {
-    clearFavoriteTrips();
-    favoriteTripsCache = [];
-    renderFavoriteTrips();
-    showToast('Favorite trips cleared.');
-  });
-
   // ---- Auto-cache network preference (Wi-Fi only vs any connection) ----
   let autoCacheNetworkPref = localStorage.getItem('tmw_autocache_network') || 'wifi';
   function updateAutoCacheNetworkPillsUI(){
@@ -1315,7 +1251,7 @@
   // ---- IndexedDB: tiny promise wrapper, one object store for road graphs ----
   const ROUTING_DB_NAME = 'tmw-routing-db';
   const ROUTING_DB_STORE = 'roadRegions';
-  const MAX_ROAD_REGIONS = 20; // evict oldest beyond this — raised from 6 to leave headroom for favorite-trip corridors (cacheRouteCorridor below), which spend several small regions per saved trip, on top of the regular around-me caching
+  const MAX_ROAD_REGIONS = 6; // evict oldest beyond this so storage doesn't grow unbounded over weeks of driving
   let routingDbPromise = null;
 
   function openRoutingDb(){
@@ -1432,73 +1368,6 @@
         await idbPutRegion({ id: regionId, savedAt: Date.now(), bounds: { s: bounds.getSouth(), w: bounds.getWest(), n: bounds.getNorth(), e: bounds.getEast() }, nodes: graph.nodes, edges: graph.edges });
       }
     } catch (_) { /* best-effort — offline routing just won't cover this area */ }
-  }
-
-  // ---------------------------------------------------------------
-  // FAVORITE-TRIP CORRIDOR CACHING
-  // Rather than caching one big bounding box around a whole trip (wasteful
-  // for a long, winding route — the box around a diagonal trip can cover
-  // far more area than the trip itself), this walks the trip's actual path
-  // and caches a series of small overlapping circles along it, so only the
-  // strip of map the trip really passes through gets stored.
-  // ---------------------------------------------------------------
-  const CORRIDOR_SAMPLE_INTERVAL_M = 6000; // one cache circle roughly every 6km of route
-  const CORRIDOR_RADIUS_KM = 2.5;          // width of the cached strip around the path
-  const CORRIDOR_ZOOM_RADIUS = 2;          // same detail range as the other caching layers (zoom 13–17 around this radius's center)
-  const CORRIDOR_MAX_SAMPLES = 12;         // caps regions/tiles spent per trip so a handful of saved trips can coexist under MAX_ROAD_REGIONS
-  const CORRIDOR_TILE_LIMIT = 8000;        // safety cap, same spirit as SAVE_AREA_TILE_LIMIT but sized for a whole trip's corridor
-
-  // Thins a route's coordinate list down to a handful of evenly-spaced
-  // points along its length — just enough to anchor cache circles, not a
-  // faithful copy of the path (loadFavoriteTrip recomputes the real route
-  // geometry live when a trip is reopened; this is only used for caching).
-  function sampleRouteForCorridor(latlngs){
-    if (!latlngs || latlngs.length < 2) return [];
-    const first = latlngs[0], last = latlngs[latlngs.length - 1];
-    const samples = [first];
-    let sinceLastM = 0;
-    for (let i = 1; i < latlngs.length; i++){
-      sinceLastM += distMeters(latlngs[i - 1], latlngs[i]);
-      if (sinceLastM >= CORRIDOR_SAMPLE_INTERVAL_M){
-        samples.push(latlngs[i]);
-        sinceLastM = 0;
-      }
-    }
-    if (samples[samples.length - 1] !== last) samples.push(last);
-    if (samples.length <= CORRIDOR_MAX_SAMPLES) return samples;
-    // Too many for a long trip — thin evenly so coverage still spans the
-    // whole route rather than just clustering near the start.
-    const thinned = [];
-    const step = (samples.length - 1) / (CORRIDOR_MAX_SAMPLES - 1);
-    for (let i = 0; i < CORRIDOR_MAX_SAMPLES; i++) thinned.push(samples[Math.round(i * step)]);
-    return thinned;
-  }
-
-  // Caches map tiles + road-graph data along a set of corridor sample
-  // points (see sampleRouteForCorridor). Used both right after saving a new
-  // favorite trip, and later to re-cache one whose data has aged out.
-  async function cacheRouteCorridor(samples, tripId, onProgress){
-    if (!samples || !samples.length) return { tileCount: 0, regionCount: 0 };
-
-    const urlSet = new Set();
-    samples.forEach(pt => {
-      const bounds = boundsAroundLatLng(pt.lat, pt.lon, CORRIDOR_RADIUS_KM);
-      tileUrlsForBounds(bounds, AUTO_CACHE_CENTER_ZOOM, CORRIDOR_ZOOM_RADIUS, SAVE_AREA_MIN_ZOOM, SAVE_AREA_MAX_ZOOM)
-        .forEach(u => urlSet.add(u));
-    });
-    const urls = Array.from(urlSet);
-    if (urls.length > CORRIDOR_TILE_LIMIT){
-      throw new Error('trip-too-long');
-    }
-
-    const tileCount = await cacheTileUrls(urls, onProgress);
-    for (let i = 0; i < samples.length; i++){
-      const bounds = boundsAroundLatLng(samples[i].lat, samples[i].lon, CORRIDOR_RADIUS_KM);
-      await saveRoadGraphForBounds(bounds, `trip_${tripId}_${i}`);
-    }
-    offlineGraphDirty = true;
-    updateOfflineStorageEstimate();
-    return { tileCount, regionCount: samples.length };
   }
 
   // ---- Merge all stored regions into one in-memory routable graph ----
@@ -2394,7 +2263,6 @@
   const searchCard   = document.getElementById('searchCard');
   const destInput     = document.getElementById('destInput');
   const clearDestBtn  = document.getElementById('clearDestBtn');
-  const favoriteTripsList = document.getElementById('favoriteTripsList');
   const suggestionsList = document.getElementById('suggestionsList');
   const modePills      = document.querySelectorAll('.mode-pill[data-mode]');
   const poiChipRow     = document.getElementById('poiChipRow');
@@ -2404,7 +2272,6 @@
   const rsSub          = document.getElementById('rsSub');
   const routeErrorBox  = document.getElementById('routeError');
   const startNavBtn    = document.getElementById('startNavBtn');
-  const saveTripBtn    = document.getElementById('saveTripBtn');
   const hudTurnPanel   = document.getElementById('hudTurnPanel');
   const hudMetricsBar  = document.getElementById('hudMetricsBar');
   const exitNavBtn     = document.getElementById('exitNavBtn');
@@ -2488,46 +2355,6 @@
   }
 
   // ---------------------------------------------------------------
-  // FAVORITE TRIPS — a full trip (destination + ordered waypoints + travel
-  // mode), saved by name and re-loadable later. Saving one also caches a
-  // strip of map tiles and road-graph data along the trip's actual path
-  // (see cacheRouteCorridor below), so a saved trip can be re-navigated
-  // with no connection, not just re-searched.
-  // ---------------------------------------------------------------
-  const FAVORITE_TRIPS_KEY = 'tmw_favorite_trips';
-  const MAX_FAVORITE_TRIPS = 30;
-
-  function loadFavoriteTrips(){
-    try { return JSON.parse(localStorage.getItem(FAVORITE_TRIPS_KEY) || '[]'); } catch (_) { return []; }
-  }
-  function saveFavoriteTripsList(list){
-    try { localStorage.setItem(FAVORITE_TRIPS_KEY, JSON.stringify(list)); } catch (_) { /* storage full/unavailable */ }
-  }
-  function addFavoriteTrip(trip){
-    const list = loadFavoriteTrips();
-    list.unshift(trip);
-    if (list.length > MAX_FAVORITE_TRIPS) list.length = MAX_FAVORITE_TRIPS;
-    saveFavoriteTripsList(list);
-    return list;
-  }
-  function updateFavoriteTrip(id, patch){
-    const list = loadFavoriteTrips();
-    const trip = list.find(t => t.id === id);
-    if (!trip) return list;
-    Object.assign(trip, patch);
-    saveFavoriteTripsList(list);
-    return list;
-  }
-  function deleteFavoriteTrip(id){
-    const list = loadFavoriteTrips().filter(t => t.id !== id);
-    saveFavoriteTripsList(list);
-    return list;
-  }
-  function clearFavoriteTrips(){
-    try { localStorage.removeItem(FAVORITE_TRIPS_KEY); } catch (_) {}
-  }
-
-  // ---------------------------------------------------------------
   // TRIP MANAGEMENT — destination + ordered waypoints
   // ---------------------------------------------------------------
   function setDestinationFromSelection(lat, lon, label){
@@ -2536,7 +2363,6 @@
     if (destMarker) map.removeLayer(destMarker);
     destMarker = L.marker([lat, lon], { icon: destPinIcon }).addTo(map);
     updatePinButtonsAvailability();
-    updateFavoriteTripsVisibility();
     computeRoute();
   }
 
@@ -2575,30 +2401,7 @@
     routeSummary.classList.remove('visible');
     hideRouteError();
     updatePinButtonsAvailability();
-    updateFavoriteTripsVisibility();
     renderTripList();
-  }
-
-  // Loads a saved favorite trip: sets travel mode, destination, and every
-  // waypoint in order, then computes the route once at the end (rather than
-  // routing after each individual stop is added, the way manual entry does).
-  function loadFavoriteTrip(trip){
-    clearTrip();
-    if (trip.mode && trip.mode !== selectedMode) selectTravelMode(trip.mode, { recompute: false });
-
-    destination = { lat: trip.destination.lat, lon: trip.destination.lon, label: trip.destination.label };
-    saveRecentDestination(destination.lat, destination.lon, destination.label);
-    destMarker = L.marker([destination.lat, destination.lon], { icon: destPinIcon }).addTo(map);
-
-    waypoints = (trip.waypoints || []).map((wp, i) => ({
-      lat: wp.lat, lon: wp.lon, label: wp.label,
-      marker: L.marker([wp.lat, wp.lon], { icon: waypointPinIcon(i + 1) }).addTo(map),
-    }));
-
-    updatePinButtonsAvailability();
-    updateFavoriteTripsVisibility();
-    computeRoute();
-    showToast(`Loaded "${trip.name}".`);
   }
 
   function tripRow(stop, kind, onRemove){
@@ -2637,7 +2440,6 @@
     clearDestBtn.classList.toggle('visible', destInput.value.length > 0);
     const q = destInput.value.trim();
     clearTimeout(searchDebounce);
-    updateFavoriteTripsVisibility();
     if (q.length < 3){ suggestionsList.classList.remove('visible'); suggestionsList.innerHTML = ''; return; }
 
     // Recent destinations and cached place names (towns/cities saved via
@@ -2708,87 +2510,6 @@
       addWaypointFromSelection(d.lat, d.lon, d.label);
     });
     return item;
-  }
-
-  // ---------------------------------------------------------------
-  // FAVORITE TRIPS — rendering for the idle-state list in the search card.
-  // ---------------------------------------------------------------
-  const MODE_LABELS = { driving: 'Drive', cycling: 'Cycle', walking: 'Walk' };
-  let favoriteTripsCache = [];
-
-  function favTripRow(trip){
-    const item = document.createElement('div');
-    item.className = 'favtrip-item';
-    item.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="color:var(--hiviz); flex-shrink:0;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-      <div class="s-text"><div class="s-title"></div><div class="s-sub"></div></div>
-      <div class="favtrip-actions">
-        <button class="favtrip-action-btn" data-action="cache" title="Save map &amp; roads for offline use">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        </button>
-        <button class="favtrip-action-btn" data-action="delete" title="Delete this favorite">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-        </button>
-      </div>`;
-    const modeLabel = MODE_LABELS[trip.mode] || 'Drive';
-    const stopCount = (trip.waypoints || []).length;
-    const stopsLabel = stopCount ? `${stopCount} stop${stopCount > 1 ? 's' : ''} · ${modeLabel}` : modeLabel;
-    item.querySelector('.s-title').textContent = trip.name;
-    item.querySelector('.s-sub').innerHTML = trip.cachedOffline
-      ? `${stopsLabel} · <span class="offline-tag">Available offline</span>`
-      : stopsLabel;
-    const cacheBtn = item.querySelector('[data-action="cache"]');
-    cacheBtn.classList.toggle('caching', !!trip.cachedOffline);
-    item.addEventListener('click', () => loadFavoriteTrip(trip));
-    cacheBtn.addEventListener('click', (ev) => { ev.stopPropagation(); cacheFavoriteTripOffline(trip, cacheBtn); });
-    item.querySelector('[data-action="delete"]').addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      favoriteTripsCache = deleteFavoriteTrip(trip.id);
-      renderFavoriteTrips();
-      showToast(`Removed "${trip.name}" from favorites.`);
-    });
-    return item;
-  }
-
-  function renderFavoriteTrips(){
-    favoriteTripsCache = loadFavoriteTrips();
-    favoriteTripsList.innerHTML = '';
-    favoriteTripsCache.forEach(trip => favoriteTripsList.appendChild(favTripRow(trip)));
-    updateFavoriteTripsVisibility();
-  }
-
-  // Shown only in the idle state — no destination set, search field empty —
-  // so it doesn't compete with active search results or an in-progress trip.
-  function updateFavoriteTripsVisibility(){
-    const shouldShow = !destination && destInput.value.trim().length === 0 && favoriteTripsCache.length > 0;
-    favoriteTripsList.classList.toggle('visible', shouldShow);
-  }
-
-  // Caches (or re-caches) one favorite trip's corridor. Safe to call
-  // whether or not that trip's route is the one currently on screen, since
-  // it works off the corridor sample points stored with the trip rather
-  // than any in-memory route state.
-  async function cacheFavoriteTripOffline(trip, btnEl){
-    if (!trip.corridorSamples || !trip.corridorSamples.length){
-      showToast('No route data saved for this trip — open it, let the route calculate, then save it again.', true);
-      return;
-    }
-    if (!navigator.onLine){
-      showToast('Offline — connect to the internet to cache this trip.', true);
-      return;
-    }
-    if (btnEl) btnEl.classList.add('caching');
-    try {
-      const { tileCount, regionCount } = await cacheRouteCorridor(trip.corridorSamples, trip.id, null);
-      favoriteTripsCache = updateFavoriteTrip(trip.id, { cachedOffline: true });
-      renderFavoriteTrips();
-      showToast(`"${trip.name}" ready offline — ${tileCount} tiles and ${regionCount} road segments cached.`);
-    } catch (err) {
-      showToast(err && err.message === 'trip-too-long'
-        ? `"${trip.name}" is too long to fully cache for offline — try a shorter version of it.`
-        : `Could not cache "${trip.name}" — check your connection and try again.`, true);
-      if (btnEl) btnEl.classList.remove('caching');
-    }
   }
 
   function renderSuggestions(results, recentMatches, savedMatches){
@@ -2910,20 +2631,13 @@
     updateSoundBtnUI();
   });
 
-  // Sets the active travel mode and keeps the Settings pills + inline
-  // indicator in sync. opts.recompute defaults to true (matches manual
-  // pill-tap behavior); loadFavoriteTrip passes false since it triggers its
-  // own single computeRoute() after the whole trip is loaded.
-  function selectTravelMode(mode, opts){
-    selectedMode = mode;
-    modePills.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
-    updateModeIndicatorIcon();
-    const recompute = !opts || opts.recompute !== false;
-    if (recompute && destination) computeRoute();
-  }
-
   modePills.forEach(btn => {
-    btn.addEventListener('click', () => selectTravelMode(btn.dataset.mode));
+    btn.addEventListener('click', () => {
+      selectedMode = btn.dataset.mode;
+      modePills.forEach(b => b.classList.toggle('active', b === btn));
+      updateModeIndicatorIcon();
+      if (destination) computeRoute();
+    });
   });
 
   // ---------------------------------------------------------------
@@ -3645,72 +3359,6 @@
   });
   closeSettingsBtn.addEventListener('click', () => settingsOverlay.classList.remove('visible'));
   settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) settingsOverlay.classList.remove('visible'); });
-
-  // ---------------------------------------------------------------
-  // SAVE TRIP SHEET — name a previewed route and store it as a favorite,
-  // then cache its corridor for offline use (see cacheRouteCorridor).
-  // ---------------------------------------------------------------
-  const saveTripOverlay      = document.getElementById('saveTripOverlay');
-  const saveTripNameInput    = document.getElementById('saveTripNameInput');
-  const saveTripNote         = document.getElementById('saveTripNote');
-  const cancelSaveTripBtn    = document.getElementById('cancelSaveTripBtn');
-  const confirmSaveTripBtn   = document.getElementById('confirmSaveTripBtn');
-
-  function openSaveTripSheet(){
-    saveTripNameInput.value = '';
-    saveTripNote.textContent = isOffline
-      ? "You're offline right now — the trip will be saved, but map/road caching for it will need to wait until you're back online."
-      : "This will also cache a strip of map and road data along the route, so this exact trip can be re-navigated with no connection.";
-    saveTripOverlay.classList.add('visible');
-    setTimeout(() => saveTripNameInput.focus(), 50);
-  }
-  function closeSaveTripSheet(){
-    saveTripOverlay.classList.remove('visible');
-  }
-
-  if (saveTripBtn) saveTripBtn.addEventListener('click', () => {
-    if (!destination || !routeLatLngs || !routeLatLngs.length){
-      showToast('Calculate a route before saving it as a favorite.', true);
-      return;
-    }
-    openSaveTripSheet();
-  });
-  cancelSaveTripBtn.addEventListener('click', closeSaveTripSheet);
-  saveTripOverlay.addEventListener('click', (e) => { if (e.target === saveTripOverlay) closeSaveTripSheet(); });
-  saveTripNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmSaveTripBtn.click(); });
-
-  confirmSaveTripBtn.addEventListener('click', async () => {
-    const name = saveTripNameInput.value.trim();
-    if (!name){ showToast('Give this trip a name first.', true); return; }
-    if (!destination || !routeLatLngs || !routeLatLngs.length){
-      showToast('Calculate a route before saving it as a favorite.', true);
-      closeSaveTripSheet();
-      return;
-    }
-
-    const trip = {
-      id: 'trip_' + Date.now(),
-      name,
-      mode: selectedMode,
-      destination: { lat: destination.lat, lon: destination.lon, label: destination.label },
-      waypoints: waypoints.map(wp => ({ lat: wp.lat, lon: wp.lon, label: wp.label })),
-      corridorSamples: sampleRouteForCorridor(routeLatLngs),
-      cachedOffline: false,
-      savedAt: Date.now(),
-    };
-    favoriteTripsCache = addFavoriteTrip(trip);
-    renderFavoriteTrips();
-    closeSaveTripSheet();
-
-    if (isOffline){
-      showToast(`Saved "${name}". Reconnect and tap its offline icon to cache it.`, true);
-      return;
-    }
-    showToast(`Saved "${name}" — caching map & roads for offline use…`);
-    cacheFavoriteTripOffline(trip);
-  });
-
-  renderFavoriteTrips();
 
   themePills.forEach(btn => btn.addEventListener('click', () => applyTheme(btn.dataset.themeChoice)));
   function updateThemePillsUI(){
