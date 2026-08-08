@@ -857,6 +857,21 @@
         <button class="mode-pill" data-theme-choice="auto">Auto</button>
       </div>
       <div style="font-size:11px; color:var(--steel); margin-top:8px; line-height:1.4;">Auto switches with real darkness outside — using your device's light sensor where available, or the local time of day otherwise — not just your OS setting.</div>
+      <div class="settings-row-title" style="margin-top:18px;">Map style</div>
+      <div class="mode-pills" id="mapStylePills">
+        <button class="mode-pill" data-map-style="streets" title="Streets">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l5-16 3 10 3-6 5 12H4z"/></svg>
+          <span>Streets</span>
+        </button>
+        <button class="mode-pill" data-map-style="satellite" title="Satellite">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18 14 14 0 010-18z"/></svg>
+          <span>Satellite</span>
+        </button>
+        <button class="mode-pill" data-map-style="terrain" title="Terrain">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20l6-11 4 6 2-3 6 8H3z"/><circle cx="9" cy="6" r="1.6"/></svg>
+          <span>Terrain</span>
+        </button>
+      </div>
       <div class="settings-row-title" style="margin-top:18px;">Sound</div>
       <button id="soundToggleBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Sound: On</button>
       <button id="voiceNavToggleBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px; margin-top:8px;">Voice directions: Off</button>
@@ -975,19 +990,55 @@
     zoom: DEFAULT_ZOOM,
   });
 
-  const TILE_URLS = {
-    dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-  };
-  let currentTileLayer = null;
-  function setBasemap(effTheme){
-    const url = effTheme === 'light' ? TILE_URLS.light : TILE_URLS.dark;
-    if (currentTileLayer) map.removeLayer(currentTileLayer);
-    currentTileLayer = L.tileLayer(url, {
+  // Map style — the basemap "skin", independent of light/dark theme.
+  // Each style optionally has separate dark/light tile URLs; styles that
+  // only come in one flavor (satellite imagery, topo shading) just reuse
+  // the same URL for both so switching theme doesn't also switch style.
+  const MAP_STYLES = {
+    streets: {
+      label: 'Streets',
+      dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
       attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
       subdomains: 'abcd', maxZoom: 20,
+    },
+    satellite: {
+      label: 'Satellite',
+      dark:  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      light: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics',
+      subdomains: 'abc', maxZoom: 19,
+    },
+    terrain: {
+      label: 'Terrain',
+      dark:  'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      light: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      attribution: '&copy; OpenStreetMap contributors, SRTM &copy; OpenTopoMap (CC-BY-SA)',
+      subdomains: 'abc', maxZoom: 17,
+    },
+  };
+  let mapStyle = localStorage.getItem('tmw_map_style') || 'streets';
+  if (!MAP_STYLES[mapStyle]) mapStyle = 'streets';
+  let currentTileLayer = null;
+  function setBasemap(effTheme){
+    const style = MAP_STYLES[mapStyle] || MAP_STYLES.streets;
+    const url = effTheme === 'light' ? style.light : style.dark;
+    if (currentTileLayer) map.removeLayer(currentTileLayer);
+    currentTileLayer = L.tileLayer(url, {
+      attribution: style.attribution,
+      subdomains: style.subdomains || 'abc', maxZoom: style.maxZoom || 19,
     }).addTo(map);
     currentTileLayer.bringToBack();
+  }
+  function setMapStyle(style){
+    if (!MAP_STYLES[style] || style === mapStyle) return;
+    mapStyle = style;
+    localStorage.setItem('tmw_map_style', mapStyle);
+    setBasemap(effectiveTheme());
+    updateMapStylePillsUI();
+  }
+  function updateMapStylePillsUI(){
+    document.querySelectorAll('#mapStylePills .mode-pill').forEach(b => b.classList.toggle('active', b.dataset.mapStyle === mapStyle));
   }
 
   // ---------------------------------------------------------------
@@ -1055,6 +1106,37 @@
     document.documentElement.setAttribute('data-theme', eff);
     setBasemap(eff);
     updateThemePillsUI();
+    // selectedMode is declared with `let` further down the script; this
+    // runs once at startup before that line executes, so guard with
+    // try/catch rather than typeof (typeof also throws in a let's TDZ).
+    let modeForAccent = 'driving';
+    try { modeForAccent = selectedMode; } catch (_) {}
+    applyModeAccent(modeForAccent);
+  }
+
+  // ---------------------------------------------------------------
+  // PER-MODE ACCENT COLOR — Drive/Cycle/Walk each get their own hi-viz
+  // accent (route line, active pills, buttons, ETA text, etc. all read
+  // off the --hiviz / --hiviz-dim custom properties already used
+  // throughout the stylesheet), with a slightly different shade for
+  // light vs dark theme so it stays legible either way. Set as an
+  // inline style on <html> so it overrides the html[data-theme] rules
+  // in the stylesheet regardless of theme.
+  // ---------------------------------------------------------------
+  const MODE_ACCENTS = {
+    driving: { dark: { hiviz: '#2463D6', dim: '#1B4EA8' }, light: { hiviz: '#2463D6', dim: '#1B4EA8' } },
+    cycling: { dark: { hiviz: '#2BD97C', dim: '#1E9E5A' }, light: { hiviz: '#1FAE63', dim: '#167B47' } },
+    walking: { dark: { hiviz: '#A78BFA', dim: '#7C5FE0' }, light: { hiviz: '#8B5CF6', dim: '#6A3FD1' } },
+  };
+  function applyModeAccent(mode){
+    const eff = effectiveTheme();
+    const accent = (MODE_ACCENTS[mode] || MODE_ACCENTS.driving)[eff] || MODE_ACCENTS.driving.dark;
+    document.documentElement.style.setProperty('--hiviz', accent.hiviz);
+    document.documentElement.style.setProperty('--hiviz-dim', accent.dim);
+    // Recolor an already-drawn route line in place (e.g. theme toggled
+    // mid-trip); routeLayer may not exist yet this early during startup,
+    // hence the try/catch rather than a typeof/TDZ-unsafe check.
+    try { if (routeLayer) routeLayer.setStyle({ color: accent.hiviz }); } catch (_) {}
   }
   lightMedia.addEventListener('change', () => { if (themeMode === 'auto' && ambientIsDark === null) applyTheme('auto'); });
 
@@ -3037,6 +3119,7 @@
   modeIndicatorBtn.addEventListener('click', () => {
     settingsOverlay.classList.add('visible');
     updateThemePillsUI();
+    updateMapStylePillsUI();
     updateSoundBtnUI();
   });
 
@@ -3048,6 +3131,7 @@
     selectedMode = mode;
     modePills.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
     updateModeIndicatorIcon();
+    applyModeAccent(mode);
     const recompute = !opts || opts.recompute !== false;
     if (recompute && destination) computeRoute();
   }
@@ -3493,7 +3577,8 @@
     const latlngs = route.geometry.coordinates.map(c => [c[1], c[0]]);
     routeLatLngs = route.geometry.coordinates.map(c => ({ lat: c[1], lon: c[0] }));
     if (routeLayer) map.removeLayer(routeLayer);
-    routeLayer = L.polyline(latlngs, { color: '#2463D6', weight: 5, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+    const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--hiviz').trim() || '#2463D6';
+    routeLayer = L.polyline(latlngs, { color: accentColor, weight: 5, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(map);
     if (navState !== 'navigating'){
       map.fitBounds(routeLayer.getBounds(), {
         paddingTopLeft: [40, getMapTopInsetPx()],
@@ -3843,12 +3928,14 @@
   const settingsOverlay   = document.getElementById('settingsOverlay');
   const closeSettingsBtn  = document.getElementById('closeSettingsBtn');
   const themePills        = document.querySelectorAll('#themePills .mode-pill');
+  const mapStylePills     = document.querySelectorAll('#mapStylePills .mode-pill');
   const soundToggleBtn    = document.getElementById('soundToggleBtn');
   const voiceNavToggleBtn = document.getElementById('voiceNavToggleBtn');
 
   settingsBtnHeader.addEventListener('click', () => {
     settingsOverlay.classList.add('visible');
     updateThemePillsUI();
+    updateMapStylePillsUI();
     updateSoundBtnUI();
     updateVoiceNavBtnUI();
     updateOfflineStorageEstimate();
@@ -3921,6 +4008,9 @@
   });
 
   renderFavoriteTrips();
+
+  mapStylePills.forEach(btn => btn.addEventListener('click', () => setMapStyle(btn.dataset.mapStyle)));
+  updateMapStylePillsUI();
 
   themePills.forEach(btn => btn.addEventListener('click', () => applyTheme(btn.dataset.themeChoice)));
   function updateThemePillsUI(){
