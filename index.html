@@ -870,7 +870,7 @@
       <div style="font-size:11px; color:var(--steel); margin-top:8px; line-height:1.4;">When a route is available, alternatives to choose from (e.g. via highway or via ferry) appear under the route summary automatically.</div>
 
       <div class="settings-row-title" style="margin-top:18px;">Offline maps &amp; routing</div>
-      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Map tiles you've browsed are cached automatically as you go. On launch, three layers cache automatically: detailed street-level tiles for ~20km around your GPS position (with road data for calculating new routes offline), a lighter regional layer covering ~1500km (map + search only — routing needs the detailed layer), and a coarse world view so the map never looks blank. New routes can be calculated with no connection as long as both ends of the trip fall inside an area you've cached — offline routing uses simpler turn instructions and rougher time estimates than live routing, with no traffic data. To be sure a specific area is ready before you lose signal, save it here too.</div>
+      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Map tiles you've browsed are cached automatically as you go. On launch, three layers cache automatically: detailed street-level tiles for ~20km around your GPS position (with road data for calculating new routes offline), a lighter regional layer covering ~1500km (map + search only — routing needs the detailed layer), and a coarse world view so the map never looks blank. The moment you tap Start on a route, the road data (and tiles) along that entire route are cached in the background too — so if you lose signal partway through a longer trip, rerouting still works using the on-device road graph, not just the immediate ~20km around where you started. New routes can be calculated with no connection as long as both ends of the trip fall inside an area you've cached — offline routing uses simpler turn instructions and rougher time estimates than live routing, with no traffic data. To be sure a specific area is ready before you lose signal, save it here too.</div>
       <div class="settings-row-title" style="margin-top:12px; font-size:11px;">Automatic caching uses</div>
       <div class="mode-pills" id="autoCacheNetworkPills">
         <button class="mode-pill" data-net-choice="wifi">Wi-Fi only</button>
@@ -3625,6 +3625,26 @@
     setFollowState(true, true);
     SOUNDS.navStart();
     refreshTurnPanel();
+    precacheActiveRouteCorridor();
+  }
+
+  // Proactively caches the road graph (+ tiles) along the route being
+  // navigated right now, not just for trips explicitly saved as
+  // favorites — so if connectivity drops mid-trip, offline rerouting
+  // (see recalculateActiveRoute) actually has data to work with beyond
+  // whatever fell inside the small ~20km around-your-GPS auto-cache.
+  // Fire-and-forget: never blocks navigation, and respects the same
+  // Wi-Fi-only/any-connection preference as the other auto-caching.
+  // Reuses a fixed region-id prefix ('active_route_N') so caching a new
+  // live route simply overwrites the previous one's regions instead of
+  // accumulating indefinitely.
+  function precacheActiveRouteCorridor(){
+    if (isOffline || !canAutoCacheNow() || !routeLatLngs || routeLatLngs.length < 2) return;
+    cacheRouteCorridor(sampleRouteForCorridor(routeLatLngs), 'active_route', null).catch(() => {
+      // Too long for the tile budget, or a transient fetch failure — the
+      // smaller around-your-GPS auto-cache still covers the start of the
+      // trip, so this is a soft failure, not worth surfacing to the user.
+    });
   }
 
   function stopNavigation(){
@@ -3724,21 +3744,13 @@
   }
 
   async function recalculateActiveRoute(pos){
-    if (isOffline){
-      // No point spending time on a fetch that can't succeed — keep going on
-      // the route already loaded (it's cached, GPS still works fine offline)
-      // and just say so once rather than on every off-route check.
-      if (!offlineRecalcNoticeShown){
-        offlineRecalcNoticeShown = true;
-        showToast("Offline — can't recalculate, continuing on your last route.", true);
-      }
-      return;
-    }
     recalcBanner.classList.add('visible');
     SOUNDS.recalc();
+    const points = [pos, ...waypoints, destination];
     try {
-      const points = [pos, ...waypoints, destination];
-      const route = await fetchRoute(points, selectedMode);
+      if (isOffline) throw new Error('offline');
+      const routes = await fetchRoute(points, selectedMode);
+      const route = routes[0];
       drawRoute(route);
       routeTotalDistanceM = route.distance;
       routeTotalDurationS = route.duration || (route.distance / AVG_SPEED_MPS_FALLBACK[selectedMode]);
@@ -3748,8 +3760,38 @@
       alertedStepIndexForTurn = null;
       alertedStepIndexForImminent = null;
       isOffRoute = false; // fresh route just drawn through the current position — by definition, back on it
-    } catch (_) {
-      showToast('Recalculation failed — keep going, retrying shortly.');
+      precacheActiveRouteCorridor();
+    } catch (liveErr) {
+      // Live recalculation failed (offline, or the routing server is down)
+      // — fall back to the on-device road graph, same as the initial
+      // computeRoute() does, so rerouting keeps working mid-trip too.
+      try {
+        const offlineRoutes = await computeOfflineRoute(points, selectedMode);
+        if (!offlineRoutes) throw new Error('no offline coverage');
+        const route = offlineRoutes[0];
+        drawRoute(route);
+        routeTotalDistanceM = route.distance;
+        routeTotalDurationS = route.duration;
+        routeSteps = buildFlatSteps(route, waypoints.slice());
+        currentStepIndex = 0;
+        alertedStepIndexForPrepare = null;
+        alertedStepIndexForTurn = null;
+        alertedStepIndexForImminent = null;
+        isOffRoute = false;
+        if (!offlineRecalcNoticeShown){
+          offlineRecalcNoticeShown = true;
+          showToast('Rerouted using cached offline road data — approximate timing, no live traffic.', true);
+        }
+      } catch (offlineErr) {
+        if (isOffline){
+          if (!offlineRecalcNoticeShown){
+            offlineRecalcNoticeShown = true;
+            showToast("Offline and this area isn't cached — can't reroute, continuing on your last route.", true);
+          }
+        } else {
+          showToast('Recalculation failed — keep going, retrying shortly.');
+        }
+      }
     } finally {
       recalcBanner.classList.remove('visible');
     }
