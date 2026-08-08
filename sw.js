@@ -29,6 +29,9 @@ const APP_SHELL_URLS = [
   './vendor/leaflet/leaflet.css',
   './vendor/leaflet/leaflet.js',
   './icons/TraceMyWay.png',
+  './icons/mode-driving.png',
+  './icons/mode-cycling.png',
+  './icons/mode-walking.png',
 ];
 
 self.addEventListener('install', (event) => {

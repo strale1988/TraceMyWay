@@ -462,17 +462,34 @@
     transition: background .15s ease, color .15s ease;
   }
   .mode-pill.active{ background: var(--hiviz); color: var(--asphalt); }
-  .mode-pill svg{ width: 16px; height: 16px; }
 
-  /* Small "current travel mode" indicator + shortcut into Settings, shown
-     inline with the search field now that Drive/Cycle/Walk itself lives in
-     the settings sheet instead of taking a full row here. */
+  /* Mode icons (Drive/Cycle/Walk) render from the uploaded PNG set via a
+     CSS mask rather than <img>, so they still recolor with currentColor
+     exactly like the inline SVGs they replaced — e.g. the indicator
+     button below tints per-mode via applyModeAccent()'s --hiviz swap. */
+  .mode-icon-img{
+    display:inline-block; flex-shrink:0;
+    background-color: currentColor;
+    -webkit-mask-size: contain; mask-size: contain;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    -webkit-mask-position: center; mask-position: center;
+  }
+  .mode-pill .mode-icon-img{ width:16px; height:16px; }
+  .mode-icon-driving{ -webkit-mask-image:url('./icons/mode-driving.png'); mask-image:url('./icons/mode-driving.png'); }
+  .mode-icon-cycling{ -webkit-mask-image:url('./icons/mode-cycling.png'); mask-image:url('./icons/mode-cycling.png'); }
+  .mode-icon-walking{ -webkit-mask-image:url('./icons/mode-walking.png'); mask-image:url('./icons/mode-walking.png'); }
+
+  /* Small "current travel mode" indicator, shown inline with the search
+     field. Tapping it cycles Drive -> Cycle -> Walk directly (no detour
+     through Settings) — see selectTravelMode()'s cycling click handler. */
   #modeIndicatorBtn{
     flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px;
     display:flex; align-items:center; justify-content:center;
     background: var(--panel-hi); border:1px solid var(--line); color: var(--hiviz);
+    transition: background .15s ease, transform .1s ease;
   }
-  #modeIndicatorBtn svg{ width:18px; height:18px; }
+  #modeIndicatorBtn:active{ transform: scale(0.92); }
+  #modeIndicatorBtn .mode-icon-img{ width:18px; height:18px; }
 
   /* Drop-pin / add-waypoint-pin buttons — same footprint as the mode
      indicator so the whole row of icons lines up. "Armed" means the next
@@ -681,7 +698,8 @@
     #hudMetricsBar{ left: 10px; right: 10px; }
     .search-input-row{ gap: 5px; }
     #modeIndicatorBtn, .icon-btn-inline{ width: 30px; height: 30px; border-radius: 8px; }
-    #modeIndicatorBtn svg, .icon-btn-inline svg{ width: 16px; height: 16px; }
+    #modeIndicatorBtn .mode-icon-img{ width: 16px; height: 16px; }
+    .icon-btn-inline svg{ width: 16px; height: 16px; }
   }
 </style>
 </head>
@@ -740,8 +758,8 @@
         <button id="saveTripBtn" class="icon-btn-inline" title="Save this trip as a favorite">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
         </button>
-        <button id="modeIndicatorBtn" title="Travel mode — open in Settings">
-          <svg id="modeIndicatorIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/></svg>
+        <button id="modeIndicatorBtn" title="Driving — tap to switch mode">
+          <span id="modeIndicatorIcon" class="mode-icon-img mode-icon-driving"></span>
         </button>
         <button id="startNavBtn" class="btn-primary">Start Navigation</button>
       </div>
@@ -845,15 +863,15 @@
       <div class="settings-row-title">Travel mode</div>
       <div class="mode-pills" id="modePills">
         <button class="mode-pill active" data-mode="driving" title="Driving">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/></svg>
+          <span class="mode-icon-img mode-icon-driving"></span>
           <span>Drive</span>
         </button>
         <button class="mode-pill" data-mode="cycling" title="Cycling">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2 1 1 0 000 2zM12 17.5V14l-3-3 4-3 2 3h3"/></svg>
+          <span class="mode-icon-img mode-icon-cycling"></span>
           <span>Cycle</span>
         </button>
         <button class="mode-pill" data-mode="walking" title="Walking">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="1.6"/><path d="M10 22l1.5-6L9 14l1-5 3-2 3 2 2 2M11.5 16l3 1 2 5"/></svg>
+          <span class="mode-icon-img mode-icon-walking"></span>
           <span>Walk</span>
         </button>
       </div>
@@ -3464,28 +3482,28 @@
   });
 
   // ---------------------------------------------------------------
-  // MODE SELECTOR (lives in the Settings sheet now — see #modePills there).
-  // The search card just keeps a small read-only icon (#modeIndicatorBtn)
-  // showing whichever mode is active, tapping it jumps straight into
-  // Settings to change it.
+  // MODE SELECTOR. Drive/Cycle/Walk still lives as a set of pills in the
+  // Settings sheet (#modePills), but the small indicator icon inline with
+  // the search field (#modeIndicatorBtn) is the fast path: tapping it
+  // cycles straight through Driving -> Cycling -> Walking -> Driving,
+  // no detour through Settings needed. Settings is still reachable via
+  // the header gear icon (#settingsBtnHeader) if someone wants to see
+  // all three side by side instead of cycling blind.
   // ---------------------------------------------------------------
-  const MODE_ICON_PATHS = {
-    driving: '<path d="M5 17h14M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4zM5 17l1.5-6.5A2 2 0 018.42 9h7.16a2 2 0 011.92 1.5L19 17M5 17H3v-3l2-2M19 17h2v-3l-2-2M5 12h14"/>',
-    cycling: '<circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2 1 1 0 000 2zM12 17.5V14l-3-3 4-3 2 3h3"/>',
-    walking: '<circle cx="13" cy="4" r="1.6"/><path d="M10 22l1.5-6L9 14l1-5 3-2 3 2 2 2M11.5 16l3 1 2 5"/>',
-  };
+  const MODE_ORDER = ['driving', 'cycling', 'walking'];
+  const MODE_ICON_CLASS = { driving: 'mode-icon-driving', cycling: 'mode-icon-cycling', walking: 'mode-icon-walking' };
+  const MODE_LABELS_FULL = { driving: 'Driving', cycling: 'Cycling', walking: 'Walking' };
   const modeIndicatorBtn  = document.getElementById('modeIndicatorBtn');
   const modeIndicatorIcon = document.getElementById('modeIndicatorIcon');
   function updateModeIndicatorIcon(){
-    modeIndicatorIcon.innerHTML = MODE_ICON_PATHS[selectedMode] || MODE_ICON_PATHS.driving;
+    modeIndicatorIcon.className = 'mode-icon-img ' + (MODE_ICON_CLASS[selectedMode] || MODE_ICON_CLASS.driving);
+    const nextMode = MODE_ORDER[(MODE_ORDER.indexOf(selectedMode) + 1) % MODE_ORDER.length];
+    modeIndicatorBtn.title = `${MODE_LABELS_FULL[selectedMode] || 'Driving'} — tap to switch to ${MODE_LABELS_FULL[nextMode]}`;
   }
   updateModeIndicatorIcon();
   modeIndicatorBtn.addEventListener('click', () => {
-    settingsOverlay.classList.add('visible');
-    updateThemePillsUI();
-    updateMapStylePillsUI();
-    updateVectorSourceRowUI();
-    updateSoundBtnUI();
+    const nextMode = MODE_ORDER[(MODE_ORDER.indexOf(selectedMode) + 1) % MODE_ORDER.length];
+    selectTravelMode(nextMode);
   });
 
   // Sets the active travel mode and keeps the Settings pills + inline
