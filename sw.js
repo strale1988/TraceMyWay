@@ -46,8 +46,17 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// NOTE on vector tiles (PMTiles): those requests go to a separate origin
+// (e.g. build.protomaps.com) as HTTP Range requests, and are deliberately
+// NOT handled here. The Cache API's matching isn't Range-aware in a way
+// that's safe to rely on for a single URL split across many byte ranges,
+// so vector-tile offline storage is done at the app layer instead — see
+// the pmtiles IndexedDB cache in index.html — rather than in this file.
+
 function isTileRequest(url) {
-  return url.hostname.endsWith('basemaps.cartocdn.com');
+  return url.hostname.endsWith('basemaps.cartocdn.com')
+    || url.hostname.endsWith('arcgisonline.com')
+    || url.hostname.endsWith('opentopomap.org');
 }
 
 function isAppShellRequest(url) {

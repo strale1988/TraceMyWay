@@ -46,6 +46,13 @@
 <link rel="stylesheet" href="./vendor/leaflet/leaflet.css" />
 <script src="./vendor/leaflet/leaflet.js" onerror="window.__tmwFatal('Failed to load the map library (Leaflet) from ./vendor/leaflet/leaflet.js. Make sure the vendor/ folder was uploaded alongside index.html.')"></script>
 
+<!-- protomaps-leaflet: optional vector basemap renderer (Settings > Map style > Vector).
+     Loaded from CDN rather than self-hosted like Leaflet above, and NOT wired
+     to the fatal-error banner — if this fails to load (offline on first
+     visit, ad-blocker, etc.) the app should just fall back to the raster
+     Streets style, not refuse to start. See setBasemap()'s "vector" branch. -->
+<script src="https://unpkg.com/protomaps-leaflet@5.1.0/dist/protomaps-leaflet.js"></script>
+
 <!-- Fonts: Rajdhani (sporty/condensed display) + Inter (body/UI) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -871,6 +878,16 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20l6-11 4 6 2-3 6 8H3z"/><circle cx="9" cy="6" r="1.6"/></svg>
           <span>Terrain</span>
         </button>
+        <button class="mode-pill" data-map-style="vector" title="Vector">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 21 8 21 16 12 22 3 16 3 8"/><line x1="12" y1="2" x2="12" y2="22"/><line x1="3" y1="8" x2="21" y2="16"/></svg>
+          <span>Vector</span>
+        </button>
+      </div>
+      <div id="vectorSourceRow" style="display:none; margin-top:10px;">
+        <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Vector uses OpenStreetMap data via <a href="https://protomaps.com" target="_blank" rel="noopener" style="color:var(--hiviz);">Protomaps</a> instead of pre-rendered map images — sharper labels, smaller downloads. Needs one source below (a free API key is quickest; a self-hosted .pmtiles file is what enables true offline use — see "Save this area for offline").</div>
+        <input id="vectorApiKeyInput" type="text" placeholder="Protomaps API key (free — protomaps.com/dashboard)" style="width:100%; box-sizing:border-box; background:var(--panel-hi); border:1px solid var(--line); color:var(--fog); border-radius:10px; padding:10px 12px; font-size:13px; margin-bottom:8px;">
+        <input id="vectorPmtilesUrlInput" type="text" placeholder="or: your own .pmtiles URL (self-hosted)" style="width:100%; box-sizing:border-box; background:var(--panel-hi); border:1px solid var(--line); color:var(--fog); border-radius:10px; padding:10px 12px; font-size:13px;">
+        <button id="saveVectorSourceBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:10px; margin-top:8px;">Save vector source</button>
       </div>
       <div class="settings-row-title" style="margin-top:18px;">Sound</div>
       <button id="soundToggleBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Sound: On</button>
@@ -994,6 +1011,8 @@
   // Each style optionally has separate dark/light tile URLs; styles that
   // only come in one flavor (satellite imagery, topo shading) just reuse
   // the same URL for both so switching theme doesn't also switch style.
+  // "vector" is a different kind of layer entirely (protomaps-leaflet,
+  // not L.tileLayer) — see setBasemap()'s branch below.
   const MAP_STYLES = {
     streets: {
       label: 'Streets',
@@ -1016,19 +1035,99 @@
       attribution: '&copy; OpenStreetMap contributors, SRTM &copy; OpenTopoMap (CC-BY-SA)',
       subdomains: 'abc', maxZoom: 17,
     },
+    vector: {
+      label: 'Vector',
+      type: 'vector',
+      attribution: '&copy; OpenStreetMap contributors &copy; Protomaps',
+    },
   };
   let mapStyle = localStorage.getItem('tmw_map_style') || 'streets';
   if (!MAP_STYLES[mapStyle]) mapStyle = 'streets';
+
+  // ---------------------------------------------------------------
+  // VECTOR BASEMAP (Protomaps) — a genuinely different data source from
+  // the raster styles above: OSM-derived vector tiles rendered client-side
+  // via protomaps-leaflet, either from Protomaps' hosted tile API (needs a
+  // free API key — https://protomaps.com/dashboard) or from a self-hosted
+  // .pmtiles file (built with their free CLI — see docs.protomaps.com —
+  // and put anywhere with CORS enabled, e.g. Cloudflare R2's free egress).
+  // Both are configured in Settings; nothing is hardcoded here, since the
+  // public example .pmtiles builds are dated (change daily) and Protomaps'
+  // own docs ask that they not be hotlinked from a real app.
+  // A self-hosted URL is also what makes "save this area for offline"
+  // possible for vector — see cacheVectorRegionOffline() further down.
+  // ---------------------------------------------------------------
+  let vectorApiKey  = localStorage.getItem('tmw_vector_api_key') || '';
+  let vectorPmtilesUrl = localStorage.getItem('tmw_vector_pmtiles_url') || '';
+  const VECTOR_CACHE_NAME = 'tmw-vector-pmtiles-v1';
+  const VECTOR_CACHE_REQUEST_KEY = 'https://tmw.local/vector-region.pmtiles'; // synthetic key, not fetched
+  let vectorOfflineBlobUrl = null; // set once a cached region blob is loaded
+  let currentVectorLayer = null;
+
+  function vectorSourceUrl(){
+    // Prefer an offline blob (already-downloaded region) when we have one,
+    // even while online, so the map doesn't needlessly re-hit the network.
+    if (vectorOfflineBlobUrl) return vectorOfflineBlobUrl;
+    if (vectorPmtilesUrl) return vectorPmtilesUrl;
+    if (vectorApiKey) return `https://api.protomaps.com/tiles/v4/{z}/{x}/{y}.mvt?key=${encodeURIComponent(vectorApiKey)}`;
+    return null;
+  }
+
+  async function tryLoadOfflineVectorBlob(){
+    try {
+      const cache = await caches.open(VECTOR_CACHE_NAME);
+      const res = await cache.match(VECTOR_CACHE_REQUEST_KEY);
+      if (!res) return false;
+      const blob = await res.blob();
+      if (vectorOfflineBlobUrl) URL.revokeObjectURL(vectorOfflineBlobUrl);
+      vectorOfflineBlobUrl = URL.createObjectURL(blob);
+      return true;
+    } catch (_) { return false; }
+  }
+
   let currentTileLayer = null;
   function setBasemap(effTheme){
     const style = MAP_STYLES[mapStyle] || MAP_STYLES.streets;
+    if (currentTileLayer){ map.removeLayer(currentTileLayer); currentTileLayer = null; }
+    if (currentVectorLayer){ map.removeLayer(currentVectorLayer); currentVectorLayer = null; }
+
+    if (style.type === 'vector'){
+      const src = vectorSourceUrl();
+      if (!src || typeof protomapsL === 'undefined'){
+        // No source configured yet, or the CDN library failed to load
+        // (offline on first run, ad-blocker, etc.) — fall back to Streets
+        // rather than show a blank map, and say why.
+        mapStyle = 'streets';
+        localStorage.setItem('tmw_map_style', mapStyle);
+        showToastSafe(typeof protomapsL === 'undefined'
+          ? 'Vector map library failed to load — switched to Streets.'
+          : 'Add a Protomaps API key or .pmtiles URL in Settings to use Vector.');
+        setBasemap(effTheme);
+        return;
+      }
+      currentVectorLayer = protomapsL.leafletLayer({
+        url: src,
+        flavor: effTheme === 'light' ? 'light' : 'dark',
+        lang: (navigator.language || 'en').split('-')[0],
+        attribution: style.attribution,
+      });
+      currentVectorLayer.addTo(map);
+      currentVectorLayer.bringToBack();
+      return;
+    }
+
     const url = effTheme === 'light' ? style.light : style.dark;
-    if (currentTileLayer) map.removeLayer(currentTileLayer);
     currentTileLayer = L.tileLayer(url, {
       attribution: style.attribution,
       subdomains: style.subdomains || 'abc', maxZoom: style.maxZoom || 19,
     }).addTo(map);
     currentTileLayer.bringToBack();
+  }
+  // Toast helper may not exist yet this early (declared further down) —
+  // same TDZ-avoidance pattern used elsewhere in this file (try/catch
+  // rather than typeof, since typeof also throws in a let/const's TDZ).
+  function showToastSafe(msg){
+    try { showToast(msg, true); } catch (_) { /* toast system not ready yet — fine to skip at startup */ }
   }
   function setMapStyle(style){
     if (!MAP_STYLES[style] || style === mapStyle) return;
@@ -1036,6 +1135,7 @@
     localStorage.setItem('tmw_map_style', mapStyle);
     setBasemap(effectiveTheme());
     updateMapStylePillsUI();
+    updateVectorSourceRowUI();
   }
   function updateMapStylePillsUI(){
     document.querySelectorAll('#mapStylePills .mode-pill').forEach(b => b.classList.toggle('active', b.dataset.mapStyle === mapStyle));
@@ -1163,6 +1263,12 @@
   })();
 
   applyTheme(themeMode); // sets data-theme + basemap now that the map exists
+  // If a vector region was previously downloaded for offline use, load it
+  // in the background and re-render the basemap once it's ready (async,
+  // since Cache Storage access can't happen synchronously at startup).
+  tryLoadOfflineVectorBlob().then((loaded) => {
+    if (loaded && mapStyle === 'vector') setBasemap(effectiveTheme());
+  });
 
   // ---------------------------------------------------------------
   // OFFLINE SUPPORT
@@ -1213,7 +1319,13 @@
     const zMin = Math.max(minZoom, centerZoom - zoomRadius);
     const zMax = Math.min(maxZoom, centerZoom + zoomRadius);
     const subdomains = ['a', 'b', 'c', 'd'];
-    const template = effectiveTheme() === 'light' ? TILE_URLS.light : TILE_URLS.dark;
+    // Raster-only (vector/PMTiles caching is a separate whole-file path —
+    // see cacheVectorPmtilesFile). Falls back to Streets' tiles if the
+    // active style happens to be Vector when this runs (e.g. the
+    // automatic around-me caching below), since there's nothing raster to
+    // pre-cache for Vector.
+    const rasterStyle = (MAP_STYLES[mapStyle] && MAP_STYLES[mapStyle].type !== 'vector') ? MAP_STYLES[mapStyle] : MAP_STYLES.streets;
+    const template = effectiveTheme() === 'light' ? rasterStyle.light : rasterStyle.dark;
     const urls = [];
     for (let z = zMin; z <= zMax; z++){
       const nw = map.project(bounds.getNorthWest(), z).divideBy(256).floor();
@@ -1328,15 +1440,34 @@
   let savingArea = false;
   async function saveCurrentAreaOffline(){
     if (savingArea) return;
-    const bounds = map.getBounds();
-    const urls = tileUrlsForBounds(bounds, Math.round(map.getZoom()), SAVE_AREA_ZOOM_RADIUS, SAVE_AREA_MIN_ZOOM, SAVE_AREA_MAX_ZOOM);
-    if (urls.length > SAVE_AREA_TILE_LIMIT){
-      showToast('That area is too large at this zoom level — zoom in a bit and try again.', true);
-      return;
-    }
     savingArea = true;
     if (saveAreaBtn) saveAreaBtn.disabled = true;
     try {
+      // Vector style downloads its whole configured .pmtiles file (there's
+      // no reliable way to carve out just "this area" client-side from a
+      // PMTiles archive — see the code comments on VECTOR_CACHE_NAME above),
+      // so it's a separate path from the raster per-tile caching below.
+      if (mapStyle === 'vector' && vectorPmtilesUrl){
+        if (saveAreaProgress) saveAreaProgress.textContent = 'Downloading vector map file…';
+        await cacheVectorPmtilesFile(vectorPmtilesUrl, (loadedBytes) => {
+          if (saveAreaProgress) saveAreaProgress.textContent = `Downloading vector map… ${(loadedBytes / (1024 * 1024)).toFixed(0)} MB`;
+        });
+        await tryLoadOfflineVectorBlob();
+        setBasemap(effectiveTheme());
+        showToast('Vector map file saved for offline use.');
+        return;
+      }
+      if (mapStyle === 'vector' && !vectorPmtilesUrl){
+        showToast('Vector offline needs a self-hosted .pmtiles URL in Settings (an API key alone can\'t be saved for offline use).', true);
+        return;
+      }
+
+      const bounds = map.getBounds();
+      const urls = tileUrlsForBounds(bounds, Math.round(map.getZoom()), SAVE_AREA_ZOOM_RADIUS, SAVE_AREA_MIN_ZOOM, SAVE_AREA_MAX_ZOOM);
+      if (urls.length > SAVE_AREA_TILE_LIMIT){
+        showToast('That area is too large at this zoom level — zoom in a bit and try again.', true);
+        return;
+      }
       const tileCount = await cacheTileUrls(urls, (done, total) => {
         if (saveAreaProgress) saveAreaProgress.textContent = `Saving… ${done}/${total}`;
       });
@@ -1356,6 +1487,30 @@
     }
   }
 
+  // Downloads a whole .pmtiles file and stores it as one entry in Cache
+  // Storage (not per-byte-range — see the note by VECTOR_CACHE_NAME above
+  // on why per-tile Range caching is avoided). Fine for the regional
+  // extracts self-hosting is meant to produce (tens to a few hundred MB);
+  // not meant for hotlinking a 100+GB planet file.
+  async function cacheVectorPmtilesFile(url, onProgress){
+    const res = await fetch(url);
+    if (!res.ok || !res.body) throw new Error('Vector file fetch failed: ' + res.status);
+    const total = Number(res.headers.get('content-length')) || 0;
+    const reader = res.body.getReader();
+    const chunks = [];
+    let loaded = 0;
+    for (;;){
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      if (onProgress) onProgress(loaded, total);
+    }
+    const blob = new Blob(chunks);
+    const cache = await caches.open(VECTOR_CACHE_NAME);
+    await cache.put(VECTOR_CACHE_REQUEST_KEY, new Response(blob, { headers: { 'Content-Type': 'application/octet-stream' } }));
+  }
+
   // Key used to mark the one-time low-zoom world-overview tile cache as
   // done (per device) — this cleanup is the only remaining reference to it.
   const WORLD_OVERVIEW_DONE_KEY = 'tmw_world_overview_cached_v1';
@@ -1363,6 +1518,9 @@
   async function clearOfflineMapData(){
     try {
       await caches.delete(TILE_CACHE_NAME);
+      await caches.delete(VECTOR_CACHE_NAME);
+      if (vectorOfflineBlobUrl){ URL.revokeObjectURL(vectorOfflineBlobUrl); vectorOfflineBlobUrl = null; }
+      if (mapStyle === 'vector') setBasemap(effectiveTheme());
       clearSavedPlaces();
       await idbClearRegions();
       localStorage.removeItem(WORLD_OVERVIEW_DONE_KEY);
@@ -3128,6 +3286,7 @@
     settingsOverlay.classList.add('visible');
     updateThemePillsUI();
     updateMapStylePillsUI();
+    updateVectorSourceRowUI();
     updateSoundBtnUI();
   });
 
@@ -3944,6 +4103,7 @@
     settingsOverlay.classList.add('visible');
     updateThemePillsUI();
     updateMapStylePillsUI();
+    updateVectorSourceRowUI();
     updateSoundBtnUI();
     updateVoiceNavBtnUI();
     updateOfflineStorageEstimate();
@@ -4019,6 +4179,28 @@
 
   mapStylePills.forEach(btn => btn.addEventListener('click', () => setMapStyle(btn.dataset.mapStyle)));
   updateMapStylePillsUI();
+
+  mapStylePills.forEach(btn => btn.addEventListener('click', () => setMapStyle(btn.dataset.mapStyle)));
+  updateMapStylePillsUI();
+
+  const vectorSourceRow      = document.getElementById('vectorSourceRow');
+  const vectorApiKeyInput    = document.getElementById('vectorApiKeyInput');
+  const vectorPmtilesUrlInput = document.getElementById('vectorPmtilesUrlInput');
+  const saveVectorSourceBtn  = document.getElementById('saveVectorSourceBtn');
+  function updateVectorSourceRowUI(){
+    if (!vectorSourceRow) return;
+    vectorSourceRow.style.display = mapStyle === 'vector' ? 'block' : 'none';
+    if (vectorApiKeyInput) vectorApiKeyInput.value = vectorApiKey;
+    if (vectorPmtilesUrlInput) vectorPmtilesUrlInput.value = vectorPmtilesUrl;
+  }
+  if (saveVectorSourceBtn) saveVectorSourceBtn.addEventListener('click', () => {
+    vectorApiKey = (vectorApiKeyInput && vectorApiKeyInput.value.trim()) || '';
+    vectorPmtilesUrl = (vectorPmtilesUrlInput && vectorPmtilesUrlInput.value.trim()) || '';
+    localStorage.setItem('tmw_vector_api_key', vectorApiKey);
+    localStorage.setItem('tmw_vector_pmtiles_url', vectorPmtilesUrl);
+    if (mapStyle === 'vector'){ setBasemap(effectiveTheme()); showToast('Vector source saved.'); }
+    else showToast('Vector source saved — switch to the Vector style to use it.');
+  });
 
   themePills.forEach(btn => btn.addEventListener('click', () => applyTheme(btn.dataset.themeChoice)));
   function updateThemePillsUI(){
