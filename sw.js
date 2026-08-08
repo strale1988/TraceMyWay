@@ -10,8 +10,13 @@
 //   2. Caches the app shell (index.html, tailwind.css, Leaflet, favicon)
 //      the same way, so the app itself can open with no connection too.
 //
-// Routing (OSRM) and search (Nominatim) calls are deliberately left alone —
-// they're not cached, and go straight to the network as before.
+// Routing (OSRM), search (Nominatim), and map/road-data queries (Overpass —
+// used for POI browsing, saved place names, and the offline road graph)
+// are all deliberately left alone here too. Overpass responses in
+// particular are structured JSON that needs to be parsed into a routable
+// graph and POI list, not just replayed byte-for-byte, so persisting them
+// for offline use happens at the app layer (IndexedDB, see the routing-db
+// code in index.html) rather than as a Cache Storage entry in this file.
 
 const APP_SHELL_CACHE = 'tmw-shell-v1';
 const TILE_CACHE = 'tmw-tiles-v1';

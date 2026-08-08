@@ -902,7 +902,7 @@
       <div style="font-size:11px; color:var(--steel); margin-top:8px; line-height:1.4;">When a route is available, alternatives to choose from (e.g. via highway or via ferry) appear under the route summary automatically.</div>
 
       <div class="settings-row-title" style="margin-top:18px;">Offline maps &amp; routing</div>
-      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Map tiles you've browsed are cached automatically as you go. On launch, three layers cache automatically: detailed street-level tiles for ~20km around your GPS position (with road data for calculating new routes offline), a lighter regional layer covering ~1500km (map + search only — routing needs the detailed layer), and a coarse world view so the map never looks blank. The moment you tap Start on a route, the road data (and tiles) along that entire route are cached in the background too — so if you lose signal partway through a longer trip, rerouting still works using the on-device road graph, not just the immediate ~20km around where you started. New routes can be calculated with no connection as long as both ends of the trip fall inside an area you've cached — offline routing uses simpler turn instructions and rougher time estimates than live routing, with no traffic data. To be sure a specific area is ready before you lose signal, save it here too.</div>
+      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Map tiles you've browsed are cached automatically as you go. On launch, three layers cache automatically: detailed street-level tiles for ~20km around your GPS position (with road data, turn-restriction rules, and nearby fuel/food/parking/etc. places for offline use), a lighter regional layer covering ~1500km (map + search only — routing needs the detailed layer), and a coarse world view so the map never looks blank. The moment you tap Start on a route, the road data (and tiles) along that entire route are cached in the background too — so if you lose signal partway through a longer trip, rerouting still works using the on-device road graph, not just the immediate ~20km around where you started. New routes can be calculated with no connection as long as both ends of the trip fall inside an area you've cached — offline routing respects one-way streets and known no-turn/turn-only rules, and estimates time from each road's actual speed limit where tagged, but instructions are simpler than live routing and there's no traffic data. To be sure a specific area is ready before you lose signal, save it here too.</div>
       <div class="settings-row-title" style="margin-top:12px; font-size:11px;">Automatic caching uses</div>
       <div class="mode-pills" id="autoCacheNetworkPills">
         <button class="mode-pill" data-net-choice="wifi">Wi-Fi only</button>
@@ -915,7 +915,7 @@
       <div id="offlineStorageEstimate" style="font-size:11px; color:var(--steel); margin-top:8px;"></div>
 
       <div class="settings-row-title" style="margin-top:18px;">Offline search</div>
-      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Destinations you've navigated to are remembered on this device. Saving an area (manually, or automatically on launch) also stores nearby place names — towns and villages close to you, plus major cities across the wider region — so you can find and re-select any of them with no connection. General free-text place search still needs signal.</div>
+      <div style="font-size:11px; color:var(--steel); margin-bottom:8px; line-height:1.4;">Destinations you've navigated to are remembered on this device. Saving an area (manually, or automatically on launch) also stores nearby place names — towns and villages close to you, plus major cities across the wider region — and named points of interest (fuel stations, restaurants, cafés, hospitals/pharmacies, hotels, ATMs, EV charging) inside that area, so you can find and re-select any of them with no connection. The category chips above the map (Fuel, Food, Parking, etc.) also switch to this cached list automatically when offline. General free-text place search still needs signal.</div>
       <button id="clearRecentBtn" class="btn-secondary" style="width:100%; border-radius:12px; padding:12px;">Clear recent destinations</button>
 
       <div class="settings-row-title" style="margin-top:18px;">Favorite trips</div>
@@ -1391,7 +1391,6 @@
   // use rather than bulk scraping, so this only runs when an area is
   // actually being saved (the manual button, or the once-in-a-while
   // auto-cache below) — never on every tile fetch.
-  const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
   const SAVED_PLACES_KEY = 'tmw_saved_places';
   const MAX_SAVED_PLACES = 800; // raised from 300 — the continent-scale tier below adds city names across a much bigger area
   const PLACES_PER_AREA_LIMIT = 40;
@@ -1425,9 +1424,11 @@
     const cap = limit || PLACES_PER_AREA_LIMIT;
     const query = `[out:json][timeout:25];node["place"~"^(${types.join('|')})$"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});out body ${cap};`;
     try {
-      const res = await fetch(OVERPASS_ENDPOINT, { method: 'POST', body: 'data=' + encodeURIComponent(query) });
-      if (!res.ok) return [];
-      const data = await res.json();
+      // Routed through overpassFetch (shared min-gap + 429 backoff) rather
+      // than a raw POST — this call now runs alongside the road-graph and
+      // POI fetches below for the same area save, so it needs to play
+      // nicely in the same queue instead of racing them independently.
+      const data = await overpassFetch(query);
       if (!data.elements) return [];
       return data.elements
         .filter(el => typeof el.lat === 'number' && typeof el.lon === 'number' && el.tags && el.tags.name)
@@ -1435,6 +1436,71 @@
     } catch (_) {
       return []; // best-effort — a saved area with tiles but no place names is still useful
     }
+  }
+
+  // ---- Offline POI caching ----
+  // The category chips (Fuel/Food/Parking/etc. — defined further down,
+  // near where they're rendered) are otherwise a pure live Overpass
+  // lookup with nothing stored, so they go dead the instant you lose
+  // signal even inside an area you've already saved. This fetches the
+  // same category set in one combined query whenever a road-graph region
+  // is saved (manual save, auto-cache-around-me, or a trip corridor) and
+  // stores the results *inside that region's own IndexedDB record* —
+  // no separate cache/cap to manage, and POIs age out exactly when the
+  // road data they're stored with does.
+  //
+  // Kept as plain tag-value strings here (not a reference to the
+  // POI_CATEGORIES map declared later in the file) so this still works
+  // regardless of load order; categorizeElementTags mirrors that map by
+  // hand and the two are meant to be kept in sync if a category is added.
+  const OFFLINE_POI_AMENITY_VALUES = ['fuel', 'parking', 'restaurant', 'fast_food', 'cafe', 'hospital', 'pharmacy', 'atm', 'charging_station'];
+  const MAX_POIS_PER_REGION = 500;
+  const OFFLINE_POI_CATEGORY_LABELS = { fuel: 'Fuel', parking: 'Parking', food: 'Food', coffee: 'Coffee', hospital: 'Hospital', hotel: 'Hotel', atm: 'ATM', charging: 'Charge' };
+
+  function categorizeElementTags(tags){
+    if (!tags) return null;
+    if (tags.amenity === 'fuel') return 'fuel';
+    if (tags.amenity === 'parking') return 'parking';
+    if (tags.amenity === 'restaurant' || tags.amenity === 'fast_food') return 'food';
+    if (tags.amenity === 'cafe') return 'coffee';
+    if (tags.amenity === 'hospital' || tags.amenity === 'pharmacy') return 'hospital';
+    if (tags.tourism === 'hotel') return 'hotel';
+    if (tags.amenity === 'atm') return 'atm';
+    if (tags.amenity === 'charging_station') return 'charging';
+    return null;
+  }
+
+  async function fetchPoisForBounds(bounds){
+    const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
+    const query = `[out:json][timeout:25];` +
+      `(node["amenity"~"^(${OFFLINE_POI_AMENITY_VALUES.join('|')})$"](${bbox});` +
+      `way["amenity"~"^(${OFFLINE_POI_AMENITY_VALUES.join('|')})$"](${bbox});` +
+      `node["tourism"="hotel"](${bbox});` +
+      `way["tourism"="hotel"](${bbox}););` +
+      `out center ${MAX_POIS_PER_REGION};`;
+    try {
+      const data = await overpassFetch(query);
+      if (!data.elements) return [];
+      return data.elements.map(el => {
+        const cat = categorizeElementTags(el.tags);
+        if (!cat) return null;
+        const lat = el.lat != null ? el.lat : (el.center && el.center.lat);
+        const lon = el.lon != null ? el.lon : (el.center && el.center.lon);
+        if (lat == null || lon == null) return null;
+        const name = (el.tags && el.tags.name) || OFFLINE_POI_CATEGORY_LABELS[cat] || cat;
+        return { lat, lon, name, cat };
+      }).filter(Boolean);
+    } catch (_) {
+      return []; // best-effort — a saved area without POI data is still useful for tiles/roads
+    }
+  }
+
+  function searchCachedPois(query, poiList){
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return (poiList || [])
+      .filter(p => p.name.toLowerCase().includes(q))
+      .map(p => ({ lat: p.lat, lon: p.lon, label: p.name, cat: p.cat }));
   }
 
   let savingArea = false;
@@ -1710,37 +1776,87 @@
     } catch (_) { /* ignore */ }
     offlineGraphDirty = true;
     offlineGraphCache = null;
+    offlineRestrictionCache = null;
+    offlinePoiCache = null;
   }
 
   // ---- Fetch + parse the road network for an area (Overpass, geometry mode) ----
-  // "out geom" returns each way with its node ids AND their coordinates
-  // together, so intersections (shared node ids across ways) fall out for
-  // free — no second recursive query needed. Covers everything from
-  // motorways down to footpaths so driving/cycling/walking all have
-  // something to route on; per-mode weighting (below) decides what's
-  // actually usable for a given trip.
   const ROAD_HIGHWAY_TYPES = ['motorway','motorway_link','trunk','trunk_link','primary','primary_link',
     'secondary','secondary_link','tertiary','tertiary_link','unclassified','residential','living_street',
     'service','pedestrian','track','path','footway','cycleway','steps'];
   const MAX_WAYS_PER_REGION = 12000; // safety cap so one dense city fetch can't blow up device memory
 
+  // Turns an OSM maxspeed tag into a plain km/h number, or null if it
+  // can't be parsed (e.g. "signals", "none", "walk", or missing). Handles
+  // the common "50", "50 km/h", "30 mph", and "50;40" (zone list — just
+  // takes the first value) forms; anything stranger is treated as absent
+  // and falls back to the per-highway-type default table further down.
+  function parseMaxspeedKmh(v){
+    if (!v) return null;
+    const s = String(v).trim().toLowerCase();
+    if (!s || s === 'none' || s === 'signals' || s === 'walk' || s === 'variable') return null;
+    const mph = s.match(/(\d+(?:\.\d+)?)\s*mph/);
+    if (mph) return parseFloat(mph[1]) * 1.60934;
+    const num = s.match(/(\d+(?:\.\d+)?)/);
+    return num ? parseFloat(num[1]) : null;
+  }
+
+  // Turn-restriction relations (type=restriction) — e.g. "no_left_turn",
+  // "only_straight_on" — expressed as a from-way / via-node / to-way
+  // triple. Only the (far more common) node-via form is handled; the
+  // rarer via-way form would need extra path-state to enforce correctly
+  // and isn't worth the complexity for an offline fallback router.
+  function parseRestrictions(relationElements){
+    const out = [];
+    (relationElements || []).forEach(rel => {
+      const tags = rel.tags || {};
+      const restriction = tags.restriction;
+      if (!restriction) return;
+      const kind = restriction.indexOf('no_') === 0 ? 'no' : restriction.indexOf('only_') === 0 ? 'only' : null;
+      if (!kind) return;
+      const members = rel.members || [];
+      const fromMember = members.find(m => m.role === 'from' && m.type === 'way');
+      const toMember = members.find(m => m.role === 'to' && m.type === 'way');
+      const viaMember = members.find(m => m.role === 'via' && m.type === 'node');
+      if (!fromMember || !toMember || !viaMember) return;
+      const except = tags.except ? tags.except.split(';').map(s => s.trim()) : null;
+      out.push({ fromWay: fromMember.ref, toWay: toMember.ref, viaNode: String(viaMember.ref), kind, except });
+    });
+    return out;
+  }
+
+  // "out geom" returns each way with its node ids AND their coordinates
+  // together, so intersections (shared node ids across ways) fall out for
+  // free — no second recursive query needed. Covers everything from
+  // motorways down to footpaths so driving/cycling/walking all have
+  // something to route on; per-mode weighting (below) decides what's
+  // actually usable for a given trip. Turn-restriction relations for the
+  // same area are fetched in the same request (via a named set, so they
+  // don't get folded into the way results) rather than a second round
+  // trip through the shared Overpass gate.
   async function fetchRoadGraphForBounds(bounds){
-    const query = `[out:json][timeout:25];way["highway"~"^(${ROAD_HIGHWAY_TYPES.join('|')})$"]` +
-      `(${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});out geom qt;`;
-    const res = await fetch(OVERPASS_ENDPOINT, { method: 'POST', body: 'data=' + encodeURIComponent(query) });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
+    const query = `[out:json][timeout:25];` +
+      `way["highway"~"^(${ROAD_HIGHWAY_TYPES.join('|')})$"](${bbox})->.roads;` +
+      `.roads out geom qt;` +
+      `relation["type"="restriction"](${bbox})->.rests;` +
+      `.rests out body;`;
+    let data;
+    try { data = await overpassFetch(query); } catch (_) { return null; }
     if (!data.elements) return null;
     const nodes = {};
     const edges = [];
-    const ways = data.elements.slice(0, MAX_WAYS_PER_REGION);
+    const ways = data.elements.filter(el => el.type === 'way').slice(0, MAX_WAYS_PER_REGION);
     ways.forEach(way => {
       if (!way.geometry || way.geometry.length < 2 || !way.nodes) return;
       const tags = way.tags || {};
       const highway = tags.highway;
       const name = tags.name || null;
-      const oneway = tags.oneway || null;
+      // A roundabout is implicitly one-way in the direction its nodes are
+      // wound, even when it carries no explicit oneway tag.
+      const oneway = tags.oneway || (tags.junction === 'roundabout' ? 'yes' : null);
       const surface = tags.surface || null;
+      const maxspeedKmh = parseMaxspeedKmh(tags.maxspeed);
       for (let i = 0; i < way.nodes.length - 1; i++){
         const idA = String(way.nodes[i]), idB = String(way.nodes[i + 1]);
         const gA = way.geometry[i], gB = way.geometry[i + 1];
@@ -1749,19 +1865,33 @@
         nodes[idB] = [gB.lat, gB.lon];
         const dist = distMeters({ lat: gA.lat, lon: gA.lon }, { lat: gB.lat, lon: gB.lon });
         if (dist <= 0) continue;
-        edges.push({ a: idA, b: idB, distance: dist, highway, name, oneway, surface });
+        edges.push({ a: idA, b: idB, distance: dist, highway, name, oneway, surface, wayId: way.id, maxspeedKmh });
       }
     });
-    return { nodes, edges };
+    const restrictions = parseRestrictions(data.elements.filter(el => el.type === 'relation'));
+    return { nodes, edges, restrictions };
   }
 
   async function saveRoadGraphForBounds(bounds, regionId){
     try {
       const graph = await fetchRoadGraphForBounds(bounds);
+      // POIs are fetched as a second, sequential call (not Promise.all)
+      // so both requests respect the same shared Overpass throttle one
+      // at a time rather than racing it — see the OVERPASS_MIN_GAP_MS
+      // gate on overpassFetch.
+      const pois = await fetchPoisForBounds(bounds);
       if (graph && (graph.edges.length)){
-        await idbPutRegion({ id: regionId, savedAt: Date.now(), bounds: { s: bounds.getSouth(), w: bounds.getWest(), n: bounds.getNorth(), e: bounds.getEast() }, nodes: graph.nodes, edges: graph.edges });
+        await idbPutRegion({
+          id: regionId,
+          savedAt: Date.now(),
+          bounds: { s: bounds.getSouth(), w: bounds.getWest(), n: bounds.getNorth(), e: bounds.getEast() },
+          nodes: graph.nodes,
+          edges: graph.edges,
+          restrictions: graph.restrictions || [],
+          pois: pois || [],
+        });
       }
-    } catch (_) { /* best-effort — offline routing just won't cover this area */ }
+    } catch (_) { /* best-effort — offline routing/POIs just won't cover this area */ }
   }
 
   // ---------------------------------------------------------------
@@ -1831,20 +1961,25 @@
     return { tileCount, regionCount: samples.length };
   }
 
-  // ---- Merge all stored regions into one in-memory routable graph ----
+  // ---- Merge all stored regions into in-memory routable data ----
   // Cached until a new region is saved (offlineGraphDirty), since merging
-  // is a bit of work and route requests can happen back-to-back.
+  // is a bit of work and route/POI requests can happen back-to-back. All
+  // three derived caches (road graph, turn restrictions, POIs) come from
+  // the same region records and rebuild together in one pass.
   let offlineGraphCache = null;
+  let offlineRestrictionCache = null;
+  let offlinePoiCache = null;
   let offlineGraphDirty = true;
 
-  async function loadOfflineGraph(){
-    if (offlineGraphCache && !offlineGraphDirty) return offlineGraphCache;
+  async function rebuildOfflineCaches(){
     const regions = await idbGetAllRegions();
     const nodes = new Map();
     const adjacency = new Map();
+    const restrictionMap = new Map(); // `${viaNode}|${fromWayId}` -> [{ kind, toWay, except }]
+    const pois = [];
     function addEdge(a, b, meta){
       if (!adjacency.has(a)) adjacency.set(a, []);
-      adjacency.get(a).push({ to: b, distance: meta.distance, highway: meta.highway, name: meta.name, surface: meta.surface });
+      adjacency.get(a).push({ to: b, distance: meta.distance, highway: meta.highway, name: meta.name, surface: meta.surface, wayId: meta.wayId, maxspeedKmh: meta.maxspeedKmh });
     }
     regions.forEach(region => {
       Object.keys(region.nodes).forEach(id => { if (!nodes.has(id)) nodes.set(id, region.nodes[id]); });
@@ -1858,10 +1993,35 @@
           addEdge(e.b, e.a, e);
         }
       });
+      (region.restrictions || []).forEach(r => {
+        const key = `${r.viaNode}|${r.fromWay}`;
+        if (!restrictionMap.has(key)) restrictionMap.set(key, []);
+        restrictionMap.get(key).push({ kind: r.kind, toWay: r.toWay, except: r.except });
+      });
+      (region.pois || []).forEach(p => pois.push(p));
     });
     offlineGraphCache = { nodes, adjacency };
+    offlineRestrictionCache = restrictionMap;
+    offlinePoiCache = pois;
     offlineGraphDirty = false;
+  }
+
+  async function loadOfflineGraph(){
+    if (!offlineGraphCache || offlineGraphDirty) await rebuildOfflineCaches();
     return offlineGraphCache;
+  }
+
+  async function loadOfflineRestrictions(){
+    if (!offlineRestrictionCache || offlineGraphDirty) await rebuildOfflineCaches();
+    return offlineRestrictionCache;
+  }
+
+  // Flat list of cached POIs across every saved region — used for offline
+  // category browsing (fetchPoiCategory's offline branch) and offline
+  // name search (searchCachedPois), both further down.
+  async function loadOfflinePois(){
+    if (!offlinePoiCache || offlineGraphDirty) await rebuildOfflineCaches();
+    return offlinePoiCache || [];
   }
 
   const OFFLINE_SNAP_MAX_M = 400; // beyond this, treat the point as "not covered" rather than snapping somewhere useless
@@ -1943,7 +2103,25 @@
   // A* over the merged graph. Returns the node-id path and the edge chosen
   // for each hop (so highway/name/distance survive for step-building), or
   // null if unreachable within the cached data.
-  function astarPath(graph, startId, goalId, mode){
+  // Checks whether turning from `incomingWayId` onto `edge` at `viaNodeId`
+  // is allowed under any cached restriction relation. Restrictions are
+  // looked up by (via node, from way) — see parseRestrictions/rebuildOfflineCaches
+  // — so this is a cheap map lookup per expansion, not a graph search.
+  function turnIsRestricted(restrictions, viaNodeId, incomingWayId, edge, mode){
+    if (!restrictions || incomingWayId == null) return false;
+    const entries = restrictions.get(`${viaNodeId}|${incomingWayId}`);
+    if (!entries || !entries.length) return false;
+    const exceptionKey = mode === 'cycling' ? 'bicycle' : mode === 'walking' ? 'foot' : null;
+    const applicable = entries.filter(r => !(exceptionKey && r.except && r.except.indexOf(exceptionKey) !== -1));
+    if (!applicable.length) return false;
+    const noEntries = applicable.filter(r => r.kind === 'no');
+    if (noEntries.some(r => r.toWay === edge.wayId)) return true;
+    const onlyEntries = applicable.filter(r => r.kind === 'only');
+    if (onlyEntries.length && !onlyEntries.some(r => r.toWay === edge.wayId)) return true;
+    return false;
+  }
+
+  function astarPath(graph, startId, goalId, mode, restrictions){
     if (startId === goalId) return { nodeIds: [startId], edgesUsed: [] };
     const goalCoord = graph.nodes.get(goalId);
     const gScore = new Map([[startId, 0]]);
@@ -1969,9 +2147,13 @@
         return { nodeIds, edgesUsed };
       }
       closed.add(current.id);
+      // The way we arrived at `current` on, if any — needed to check
+      // from/via/to turn restrictions on the edges leaving this node.
+      const incomingWayId = cameFrom.has(current.id) ? cameFrom.get(current.id).edge.wayId : null;
       const neighbors = graph.adjacency.get(current.id) || [];
       for (const edge of neighbors){
         if (closed.has(edge.to)) continue;
+        if (turnIsRestricted(restrictions, current.id, incomingWayId, edge, mode)) continue;
         const w = edgeWeight(edge, mode);
         if (!isFinite(w)) continue;
         const tentativeG = gScore.get(current.id) + w;
@@ -3018,19 +3200,35 @@
     updateFavoriteTripsVisibility();
     if (q.length < 3){ suggestionsList.classList.remove('visible'); suggestionsList.innerHTML = ''; return; }
 
-    // Recent destinations and cached place names (towns/cities saved via
-    // the offline map layers) are both local lookups — show them
-    // immediately, no debounce and no network needed, so they're there
-    // even offline.
+    // Recent destinations, cached place names (towns/cities saved via the
+    // offline map layers), and cached POIs (fuel/food/etc. named places
+    // from saved areas) are all local lookups — shown immediately, no
+    // network needed, so they're there even offline. Place names resolve
+    // synchronously (localStorage); POIs read from IndexedDB and merge in
+    // a tick later, still well before the debounced live search below.
+    const thisLocalToken = ++searchToken;
     const recentMatches = searchRecentDestinations(q);
-    const savedMatches = searchSavedPlaces(q).slice(0, 8);
-    renderSuggestions([], recentMatches, savedMatches);
+    const savedPlaceMatches = searchSavedPlaces(q);
+    let cachedMatches = savedPlaceMatches.slice(0, 8);
+    renderSuggestions([], recentMatches, cachedMatches);
+
+    loadOfflinePois().then(pois => {
+      if (thisLocalToken !== searchToken) return; // query changed while this was in flight
+      cachedMatches = savedPlaceMatches.concat(searchCachedPois(q, pois)).slice(0, 8);
+      renderSuggestions([], recentMatches, cachedMatches);
+      if (isOffline && !recentMatches.length && !cachedMatches.length){
+        showToast("Offline — only places you've cached or already been to can be searched right now.", true);
+      }
+    });
 
     if (isOffline){
-      if (!recentMatches.length && !savedMatches.length) showToast("Offline — only places you've cached or already been to can be searched right now.", true);
+      if (!recentMatches.length && !cachedMatches.length) showToast("Offline — only places you've cached or already been to can be searched right now.", true);
       return; // Nominatim can't succeed with no connection, don't bother trying
     }
-    searchDebounce = setTimeout(() => runGeocodeSearch(q, recentMatches, savedMatches), 350);
+    // cachedMatches is captured by reference here, not by value — if the
+    // IndexedDB POI lookup above resolves before this timer fires (it
+    // almost always does), the live search below gets the POI-merged list.
+    searchDebounce = setTimeout(() => runGeocodeSearch(q, recentMatches, cachedMatches), 350);
   });
 
   clearDestBtn.addEventListener('click', () => {
@@ -3385,7 +3583,9 @@
       const lat = el.lat != null ? el.lat : (el.center && el.center.lat);
       const lon = el.lon != null ? el.lon : (el.center && el.center.lon);
       if (lat == null || lon == null) return;
-      const name = (el.tags && el.tags.name) || POI_CATEGORIES[cat].label;
+      // el.tags.name covers live Overpass elements; el.name covers cached
+      // offline POI records, which are stored flat (no .tags wrapper).
+      const name = (el.tags && el.tags.name) || el.name || POI_CATEGORIES[cat].label;
       const marker = L.marker([lat, lon], { icon }).addTo(poiLayer);
       marker.bindPopup(poiPopupHtml());
       marker.on('popupopen', (e) => wirePoiPopup(e.popup, lat, lon, name));
@@ -3394,19 +3594,43 @@
     poiMarkersByCategory[cat] = markers;
   }
 
+  // Filters the cached offline POI list (see loadOfflinePois, built from
+  // whatever regions have been saved) down to one category within the
+  // current viewport — same shape renderPoiMarkers already expects.
+  async function offlinePoisInView(cat, bounds){
+    const pois = await loadOfflinePois();
+    return pois.filter(p => p.cat === cat && bounds.contains([p.lat, p.lon]));
+  }
+
   let lastPoiErrorToastAt = 0;
   async function fetchPoiCategory(cat){
     const bounds = map.getBounds();
-    const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
     const def = POI_CATEGORIES[cat];
+
+    if (isOffline){
+      const cached = await offlinePoisInView(cat, bounds);
+      if (!activeCategories.has(cat)) return; // toggled off while the lookup was in flight
+      renderPoiMarkers(cat, cached);
+      if (!cached.length) showToast(`No cached ${def.label.toLowerCase()} places here yet — save this area while online to browse it offline.`);
+      return;
+    }
+
+    const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
     const q = `[out:json][timeout:15];(node${def.query}(${bbox});way${def.query}(${bbox}););out center 40;`;
     try {
       const data = await overpassFetch(q);
       if (!activeCategories.has(cat)) return; // toggled off while the request was in flight
       renderPoiMarkers(cat, data.elements || []);
     } catch (_) {
-      // Rate-limited (or briefly down) — skip quietly rather than spamming a toast
-      // on every pan while the shared backoff window is active.
+      // Rate-limited (or briefly down) — fall back to whatever's cached
+      // for this area before giving up, rather than just erroring out.
+      const cached = await offlinePoisInView(cat, bounds);
+      if (!activeCategories.has(cat)) return;
+      if (cached.length){
+        renderPoiMarkers(cat, cached);
+        showToast(`Showing cached ${def.label.toLowerCase()} places — live results unavailable right now.`);
+        return;
+      }
       const now = Date.now();
       if (now - lastPoiErrorToastAt > 20000){
         lastPoiErrorToastAt = now;
@@ -3429,7 +3653,26 @@
   // completely unchanged whether a route came from the network or the
   // on-device graph.
   // ---------------------------------------------------------------
-  const OFFLINE_MODE_SPEED_MPS = { driving: 12.5, cycling: 4.2, walking: 1.3 }; // conservative — no live traffic/terrain data offline
+  // Per-highway-type default speeds (driving only) — used whenever an edge
+  // has no usable maxspeed tag. Cycling/walking don't follow posted limits
+  // so they keep a flat conservative speed regardless of road type.
+  const OFFLINE_DRIVING_SPEED_KMH = {
+    motorway: 100, motorway_link: 60, trunk: 80, trunk_link: 50, primary: 65, primary_link: 40,
+    secondary: 55, secondary_link: 35, tertiary: 45, tertiary_link: 30, unclassified: 35,
+    residential: 30, living_street: 12, service: 15,
+  };
+  const OFFLINE_NONDRIVING_SPEED_MPS = { cycling: 4.2, walking: 1.3 }; // conservative — no live traffic/terrain data offline
+  const OFFLINE_MAX_DRIVING_SPEED_KMH = 130; // sanity cap in case a maxspeed tag is bad data
+
+  // Real per-edge speed for duration estimates — distinct from edgeWeight()
+  // above, which is a routing-preference cost (favors bigger roads) and
+  // deliberately doesn't need to reflect actual travel speed.
+  function edgeSpeedMps(edge, mode){
+    if (mode !== 'driving') return OFFLINE_NONDRIVING_SPEED_MPS[mode] || OFFLINE_NONDRIVING_SPEED_MPS.walking;
+    let kmh = edge.maxspeedKmh;
+    if (!kmh || !isFinite(kmh) || kmh <= 0) kmh = OFFLINE_DRIVING_SPEED_KMH[edge.highway] || 40;
+    return Math.min(kmh, OFFLINE_MAX_DRIVING_SPEED_KMH) / 3.6;
+  }
 
   function bearingModifier(deltaDeg){
     const d = ((deltaDeg + 180) % 360 + 360) % 360 - 180; // normalize to -180..180
@@ -3443,22 +3686,26 @@
   // Chunks the raw node-by-node A* path into named-road "steps", the same
   // granularity OSRM gives us — a new step starts at 'depart', whenever the
   // road name changes, and at the final 'arrive'.
-  function buildOfflineSteps(graph, nodeIds, edgesUsed){
+  function buildOfflineSteps(graph, nodeIds, edgesUsed, mode){
     const steps = [];
     if (!edgesUsed.length){
       const coord = graph.nodes.get(nodeIds[0]);
       steps.push({ maneuver: { type: 'arrive', location: [coord[1], coord[0]] }, name: '', distance: 0, duration: 0 });
-      return { steps, distance: 0 };
+      return { steps, distance: 0, duration: 0 };
     }
     let totalDistance = 0;
+    let totalDuration = 0;
     let runStart = 0;
     for (let i = 1; i <= edgesUsed.length; i++){
       const prevEdge = edgesUsed[i - 1];
       const nextEdge = edgesUsed[i];
       if (nextEdge && nextEdge.name === prevEdge.name) continue; // still the same named road, keep extending this step
 
-      let runDist = 0;
-      for (let k = runStart; k < i; k++) runDist += edgesUsed[k].distance;
+      let runDist = 0, runDuration = 0;
+      for (let k = runStart; k < i; k++){
+        runDist += edgesUsed[k].distance;
+        runDuration += edgesUsed[k].distance / edgeSpeedMps(edgesUsed[k], mode);
+      }
       const fromCoord = graph.nodes.get(nodeIds[runStart]);
 
       let type, modifier;
@@ -3476,40 +3723,43 @@
         maneuver: { type, modifier, location: [fromCoord[1], fromCoord[0]] },
         name: prevEdge.name || 'the road',
         distance: runDist,
-        duration: 0, // filled in by the caller once mode speed is known
+        duration: runDuration,
       });
       totalDistance += runDist;
+      totalDuration += runDuration;
       runStart = i;
     }
     const endCoord = graph.nodes.get(nodeIds[nodeIds.length - 1]);
     steps.push({ maneuver: { type: 'arrive', location: [endCoord[1], endCoord[0]] }, name: '', distance: 0, duration: 0 });
-    return { steps, distance: totalDistance };
+    return { steps, distance: totalDistance, duration: totalDuration };
   }
 
-  async function computeOfflineLeg(graph, fromPt, toPt, mode){
+  async function computeOfflineLeg(graph, fromPt, toPt, mode, restrictions){
     const startSnap = nearestGraphNode(graph, fromPt.lat, fromPt.lon);
     const goalSnap = nearestGraphNode(graph, toPt.lat, toPt.lon);
     if (!startSnap || !goalSnap) return null; // one end of this leg isn't near any cached road
-    const path = astarPath(graph, startSnap.id, goalSnap.id, mode);
+    const path = astarPath(graph, startSnap.id, goalSnap.id, mode, restrictions);
     if (!path) return null; // no route between them in the cached data
-    const built = buildOfflineSteps(graph, path.nodeIds, path.edgesUsed);
-    const speed = OFFLINE_MODE_SPEED_MPS[mode] || OFFLINE_MODE_SPEED_MPS.driving;
-    built.steps.forEach(s => { s.duration = s.distance / speed; });
+    const built = buildOfflineSteps(graph, path.nodeIds, path.edgesUsed, mode);
     const coordinates = path.nodeIds.map(id => { const c = graph.nodes.get(id); return [c[1], c[0]]; });
-    return { distance: built.distance, duration: built.distance / speed, steps: built.steps, coordinates };
+    return { distance: built.distance, duration: built.duration, steps: built.steps, coordinates };
   }
 
   // Mirrors fetchRoute()'s return shape: an array of route objects (just
   // one here — no alternatives offline). Returns null if any leg of the
-  // trip has no coverage in the cached road graph.
+  // trip has no coverage in the cached road graph. Duration now comes from
+  // each edge's actual maxspeed (or a per-highway-type default) rather
+  // than one flat speed for the whole trip — see edgeSpeedMps above —
+  // and paths honor cached turn-restriction relations via `restrictions`.
   async function computeOfflineRoute(points, mode){
     const graph = await loadOfflineGraph();
     if (!graph.nodes.size) return null;
+    const restrictions = await loadOfflineRestrictions();
     const legs = [];
     let coordinates = [];
     let totalDistance = 0, totalDuration = 0;
     for (let i = 0; i < points.length - 1; i++){
-      const leg = await computeOfflineLeg(graph, points[i], points[i + 1], mode);
+      const leg = await computeOfflineLeg(graph, points[i], points[i + 1], mode, restrictions);
       if (!leg) return null;
       legs.push({ steps: leg.steps });
       coordinates = coordinates.concat(i === 0 ? leg.coordinates : leg.coordinates.slice(1));
