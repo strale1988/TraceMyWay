@@ -1042,6 +1042,39 @@
   }
 
   // ---------------------------------------------------------------
+  // PER-MODE ACCENT COLOR — Drive/Cycle/Walk each get their own hi-viz
+  // accent (route line, active pills, buttons, ETA text, etc. all read
+  // off the --hiviz / --hiviz-dim custom properties already used
+  // throughout the stylesheet), with a slightly different shade for
+  // light vs dark theme so it stays legible either way. Set as an
+  // inline style on <html> so it overrides the html[data-theme] rules
+  // in the stylesheet regardless of theme.
+  // Declared up here (above the theme system) rather than near
+  // selectTravelMode() because applyTheme() -> applyModeAccent() can run
+  // synchronously during the theme system's own setup below (e.g. via
+  // refreshAmbientFromClock()'s initial call), so MODE_ACCENTS/
+  // applyModeAccent must already be initialized by then, not just
+  // declared later in the same scope (that was the previous bug — a
+  // same-script TDZ crash, same class of issue the TILE_URLS comment
+  // above already warns about).
+  // ---------------------------------------------------------------
+  const MODE_ACCENTS = {
+    driving: { dark: { hiviz: '#2463D6', dim: '#1B4EA8' }, light: { hiviz: '#2463D6', dim: '#1B4EA8' } },
+    cycling: { dark: { hiviz: '#2BD97C', dim: '#1E9E5A' }, light: { hiviz: '#1FAE63', dim: '#167B47' } },
+    walking: { dark: { hiviz: '#A78BFA', dim: '#7C5FE0' }, light: { hiviz: '#8B5CF6', dim: '#6A3FD1' } },
+  };
+  function applyModeAccent(mode){
+    const eff = effectiveTheme();
+    const accent = (MODE_ACCENTS[mode] || MODE_ACCENTS.driving)[eff] || MODE_ACCENTS.driving.dark;
+    document.documentElement.style.setProperty('--hiviz', accent.hiviz);
+    document.documentElement.style.setProperty('--hiviz-dim', accent.dim);
+    // Recolor an already-drawn route line in place (e.g. theme toggled
+    // mid-trip); routeLayer may not exist yet this early during startup,
+    // hence the try/catch rather than a typeof/TDZ-unsafe check.
+    try { if (routeLayer) routeLayer.setStyle({ color: accent.hiviz }); } catch (_) {}
+  }
+
+  // ---------------------------------------------------------------
   // THEME SYSTEM — light / dark / auto, persisted
   // "Auto" tracks real-world darkness rather than just the OS's light/dark
   // setting: it prefers a live ambient-light sensor when the device exposes
@@ -1112,31 +1145,6 @@
     let modeForAccent = 'driving';
     try { modeForAccent = selectedMode; } catch (_) {}
     applyModeAccent(modeForAccent);
-  }
-
-  // ---------------------------------------------------------------
-  // PER-MODE ACCENT COLOR — Drive/Cycle/Walk each get their own hi-viz
-  // accent (route line, active pills, buttons, ETA text, etc. all read
-  // off the --hiviz / --hiviz-dim custom properties already used
-  // throughout the stylesheet), with a slightly different shade for
-  // light vs dark theme so it stays legible either way. Set as an
-  // inline style on <html> so it overrides the html[data-theme] rules
-  // in the stylesheet regardless of theme.
-  // ---------------------------------------------------------------
-  const MODE_ACCENTS = {
-    driving: { dark: { hiviz: '#2463D6', dim: '#1B4EA8' }, light: { hiviz: '#2463D6', dim: '#1B4EA8' } },
-    cycling: { dark: { hiviz: '#2BD97C', dim: '#1E9E5A' }, light: { hiviz: '#1FAE63', dim: '#167B47' } },
-    walking: { dark: { hiviz: '#A78BFA', dim: '#7C5FE0' }, light: { hiviz: '#8B5CF6', dim: '#6A3FD1' } },
-  };
-  function applyModeAccent(mode){
-    const eff = effectiveTheme();
-    const accent = (MODE_ACCENTS[mode] || MODE_ACCENTS.driving)[eff] || MODE_ACCENTS.driving.dark;
-    document.documentElement.style.setProperty('--hiviz', accent.hiviz);
-    document.documentElement.style.setProperty('--hiviz-dim', accent.dim);
-    // Recolor an already-drawn route line in place (e.g. theme toggled
-    // mid-trip); routeLayer may not exist yet this early during startup,
-    // hence the try/catch rather than a typeof/TDZ-unsafe check.
-    try { if (routeLayer) routeLayer.setStyle({ color: accent.hiviz }); } catch (_) {}
   }
   lightMedia.addEventListener('change', () => { if (themeMode === 'auto' && ambientIsDark === null) applyTheme('auto'); });
 
